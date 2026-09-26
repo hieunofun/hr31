@@ -17,6 +17,7 @@ import {
   parseAttendanceDate,
   parseAttendanceTime
 } from '../utils/attendanceImport'
+import { findDeocaPunchHeader, parseDeocaPunchSheet } from '../utils/deocaPunchImport'
 import {
   applyCalculatedAttendanceTiming,
   calculateAttendanceTiming,
@@ -432,6 +433,58 @@ function AttendanceImportModal({
         tongGio: tongIdx >= 0 ? num(row[tongIdx]) : undefined
       }))
     }
+
+    return { logs, skipped }
+  }
+
+  /** Phiếu chấm công DEOCA: tên, ID, bộ phận, ngày và các giờ trong một ô Ghi. */
+  const processDeocaPunchFormat = (jsonData, header) => {
+    const parsed = parseDeocaPunchSheet(jsonData, header)
+    const logs = []
+    const skipped = [...parsed.skipped]
+
+    parsed.records.forEach(record => {
+      if (!record.check_in) {
+        skipped.push(`Dòng ${record.source_row}: không có giờ quẹt thẻ hợp lệ.`)
+        return
+      }
+
+      const employeeName = `${record.first_name} ${record.last_name}`.replace(/\s+/g, ' ').trim()
+      const sysEmp = attachSourceIdentity(
+        findEmployee(record.employee_code, employeeName) ||
+          buildFallbackEmployee(record.employee_code, employeeName, record.source_row - 1),
+        record.employee_code,
+        employeeName
+      )
+      const stats = calculateStats(
+        record.check_out ? [record.check_in, record.check_out] : [record.check_in],
+        sysEmp,
+        { department: record.department_location }
+      )
+      if (!stats) return
+
+      logs.push({
+        ...buildLog(sysEmp, record.attendance_date, { ...stats, punches: record.punches }, {
+          employeeCode: record.employee_code,
+          employeeName,
+          machineName: employeeName,
+          department: record.department_location,
+          dayOfWeek: record.weekday,
+          vao: record.check_in,
+          ra: record.check_out
+        }),
+        first_name: record.first_name,
+        last_name: record.last_name,
+        employee_code: record.employee_code,
+        department_location: record.department_location,
+        attendance_date: record.attendance_date,
+        weekday: record.weekday,
+        punch_count: record.punch_count,
+        raw_punch_times: record.raw_punch_times,
+        rawVal: record.raw_punch_times,
+        source_row: record.source_row
+      })
+    })
 
     return { logs, skipped }
   }
@@ -1134,8 +1187,10 @@ function AttendanceImportModal({
             if (count > dayColsInSheet) dayColsInSheet = count
           }
 
-          // Ma trận ngày ưu tiên cao nhất, tiếp theo là số dòng dữ liệu
-          const score = dayColsInSheet >= 7 ? 10000 + dayColsInSheet : sData.length
+          // Ưu tiên đúng bộ header DEOCA; các sheet cũ vẫn giữ cách chọn trước đây.
+          const score = findDeocaPunchHeader(sData)
+            ? 20000 + sData.length
+            : dayColsInSheet >= 7 ? 10000 + dayColsInSheet : sData.length
           if (score > maxScore) {
             maxScore = score
             worksheet = sWs
@@ -1171,7 +1226,12 @@ function AttendanceImportModal({
       let headerRowIdx = -1
       let headers = []
 
-      if (bestDayCols.length >= 7) {
+      const deocaHeader = findDeocaPunchHeader(jsonData)
+      if (deocaHeader) {
+        format = 'deoca-punch'
+        result = processDeocaPunchFormat(jsonData, deocaHeader)
+        modeLabel = 'Phiếu chấm công DEOCA'
+      } else if (bestDayCols.length >= 7) {
         format = 'matrix'
         const matrixDayRowIdx = bestDayRowIdx
         const matrixDayCols = bestDayCols
