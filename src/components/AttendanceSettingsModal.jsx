@@ -1,14 +1,21 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useAuth } from '../contexts/AuthContext'
 import { fbGet, fbUpdate } from '../services/firebase'
+import { getCompanyIdForUser } from '../utils/companyContext'
+import { DEFAULT_COMPANY_ID } from '../services/supabase'
 import { getCloudinaryConfig, saveCloudinaryConfig } from '../utils/cloudinary'
 import {
   ATTENDANCE_SHIFT_IDS,
   buildAttendanceShiftSettingsPayload,
   getAttendanceShiftOptions,
-  normalizeAttendanceShiftSettings
+  normalizeAttendanceShiftSettings,
+  validateAttendanceSettings
 } from '../utils/attendanceShift'
 
-function AttendanceSettingsModal({ isOpen, onClose, onSaved }) {
+function AttendanceSettingsModal({ isOpen, onClose, onSaved, companyId: propCompanyId }) {
+  const { user } = useAuth()
+  const activeCompanyId = propCompanyId || getCompanyIdForUser(user) || DEFAULT_COMPANY_ID
+
   const [settings, setSettings] = useState(() => normalizeAttendanceShiftSettings())
   const [selectedShiftId, setSelectedShiftId] = useState(ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE)
   const [cloudName, setCloudName] = useState('')
@@ -27,16 +34,28 @@ function AttendanceSettingsModal({ isOpen, onClose, onSaved }) {
     setCloudName(cName)
     setUploadPreset(cPreset)
 
-    fbGet('hr/attendanceSettings/default').then(storedSettings => {
-      setSettings(normalizeAttendanceShiftSettings(storedSettings))
-      setSelectedShiftId(ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE)
-      setHolidayDate('')
-      setHolidayName('')
-    }).catch(requestError => setError(requestError.message)).finally(() => setLoading(false))
-  }, [isOpen])
+    fbGet('hr/attendanceSettings/default', activeCompanyId)
+      .then(storedSettings => {
+        setSettings(normalizeAttendanceShiftSettings(storedSettings))
+        setSelectedShiftId(ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE)
+        setHolidayDate('')
+        setHolidayName('')
+      })
+      .catch(requestError => setError(requestError.message))
+      .finally(() => setLoading(false))
+  }, [isOpen, activeCompanyId])
 
   const shiftOptions = getAttendanceShiftOptions(settings)
   const selectedShift = settings.shifts[selectedShiftId]
+
+  const updateSchedule = (field, value) => {
+    setError('')
+    setSettings(current => {
+      const next = { ...current, [field]: value }
+      return normalizeAttendanceShiftSettings(next)
+    })
+  }
+
   const updateSelectedShift = (field, value) => {
     setSettings(current => ({
       ...current,
@@ -70,6 +89,15 @@ function AttendanceSettingsModal({ isOpen, onClose, onSaved }) {
 
   const submit = async event => {
     event.preventDefault()
+
+    // 1. Validation 4 mốc giờ theo quy định: workStart < lunchStart < lunchEnd < workEnd
+    const scheduleValidation = validateAttendanceSettings(settings)
+    if (!scheduleValidation.isValid) {
+      setError(scheduleValidation.error)
+      return
+    }
+
+    // 2. Validation các ca khác
     const invalidShift = getAttendanceShiftOptions(settings).find(
       shift => shift.standardCheckIn === shift.standardCheckOut
     )
@@ -78,12 +106,14 @@ function AttendanceSettingsModal({ isOpen, onClose, onSaved }) {
       setError(`Giờ ra chuẩn của ${invalidShift.name} phải khác giờ vào chuẩn.`)
       return
     }
+
     setSaving(true)
     setError('')
     try {
       await fbUpdate(
         'hr/attendanceSettings/default',
-        buildAttendanceShiftSettingsPayload(settings)
+        buildAttendanceShiftSettingsPayload(settings),
+        activeCompanyId
       )
       saveCloudinaryConfig(cloudName, uploadPreset)
       await onSaved?.()
@@ -96,69 +126,188 @@ function AttendanceSettingsModal({ isOpen, onClose, onSaved }) {
   }
 
   if (!isOpen) return null
+
+  const morningMins = settings.morningMinutes || 0
+  const afternoonMins = settings.afternoonMinutes || 0
+  const standardMins = settings.standardWorkMinutes || 0
+  const standardHours = (standardMins / 60).toFixed(2).replace(/\.00$/, '')
+
   return (
     <div className="modal show" onClick={onClose}>
-      <div className="modal-content attendance-settings" onClick={event => event.stopPropagation()}>
-        <div className="modal-header"><h2>Cài đặt giờ chấm công</h2><button className="modal-close" onClick={onClose} type="button">&times;</button></div>
+      <div className="modal-content attendance-settings" onClick={event => event.stopPropagation()} style={{ maxWidth: 760 }}>
+        <div className="modal-header">
+          <h2>Cài đặt giờ chấm công &amp; Nghỉ trưa</h2>
+          <button className="modal-close" onClick={onClose} type="button">&times;</button>
+        </div>
         <form onSubmit={submit}>
           <div className="modal-body">
-            <p style={{ marginBottom: 18, color: '#64748b' }}>Chọn từng ca để cài giờ chuẩn riêng. Báo cáo đi muộn/về sớm sẽ dùng ca của từng nhân viên.</p>
             {error && <div className="alert alert-danger" style={{ marginBottom: 16 }}>{error}</div>}
-            {loading ? <div style={{ padding: 24, textAlign: 'center' }}>Đang tải cài đặt...</div> : <>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
-                {shiftOptions.map(shift => (
-                  <button
-                    key={shift.id}
-                    className={`btn ${selectedShiftId === shift.id ? 'btn-primary' : ''}`}
-                    type="button"
-                    onClick={() => setSelectedShiftId(shift.id)}
-                  >
-                    {shift.name} ({shift.standardCheckIn}–{shift.standardCheckOut})
-                  </button>
-                ))}
-              </div>
-              <div className="attendance-settings__grid">
-                <div className="form-group"><label>Giờ vào chuẩn</label><input type="time" value={selectedShift?.standardCheckIn || ''} onChange={event => updateSelectedShift('standardCheckIn', event.target.value)} required /></div>
-                <div className="form-group"><label>Giờ ra chuẩn</label><input type="time" value={selectedShift?.standardCheckOut || ''} onChange={event => updateSelectedShift('standardCheckOut', event.target.value)} required /></div>
-              </div>
-              <div className="attendance-settings__grid" style={{ marginTop: 12 }}>
-                <div className="form-group"><label>Chuẩn ngày công (phút)</label><input type="number" min="1" step="1" value={settings.standardWorkMinutes || 480} onChange={event => setSettings(current => ({ ...current, standardWorkMinutes: Number(event.target.value) || 480 }))} /></div>
-                <div className="form-group"><label>Phút nghỉ không tính công (tuỳ chọn)</label><input type="number" min="0" step="1" value={settings.unpaidBreakMinutes || 0} onChange={event => setSettings(current => ({ ...current, unpaidBreakMinutes: Math.max(0, Number(event.target.value) || 0) }))} /></div>
-              </div>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '12px 0', color: '#334155' }}>
-                <input
-                  type="checkbox"
-                  checked={settings.overtime?.autoCalculate !== false}
-                  onChange={event => setSettings(current => ({
-                    ...current,
-                    overtime: { ...(current.overtime || {}), autoCalculate: event.target.checked }
-                  }))}
-                />
-                Tự động tính phần vượt 480 phút (HR có thể tắt để tự đánh dấu Excel)
-              </label>
-              <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid #e2e8f0' }}>
-                <h4 style={{ margin: '0 0 8px', fontSize: 14, color: '#1e293b' }}>Ngày lễ / ngày nghỉ hưởng chế độ</h4>
-                <p style={{ margin: '0 0 10px', color: '#64748b', fontSize: 13 }}>Ngày đã khai báo được đánh dấu riêng trong bảng công; không tự tạo Công khi không có dữ liệu chấm công.</p>
-                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, 1fr) minmax(160px, 1.5fr) auto', gap: 8, alignItems: 'end' }}>
-                  <div className="form-group"><label>Ngày</label><input type="date" value={holidayDate} onChange={event => setHolidayDate(event.target.value)} /></div>
-                  <div className="form-group"><label>Tên ngày lễ</label><input type="text" value={holidayName} onChange={event => setHolidayName(event.target.value)} placeholder="Ví dụ: Quốc khánh" /></div>
-                  <button type="button" className="btn" onClick={addHoliday} disabled={!holidayDate}>Thêm ngày lễ</button>
+            {loading ? (
+              <div style={{ padding: 24, textAlign: 'center' }}>Đang tải cài đặt...</div>
+            ) : (
+              <>
+                {/* 1. KHUNG CẤU HÌNH 4 TRƯỜNG CHÍNH THEO CÔNG TY */}
+                <div style={{ padding: 16, background: '#f8fafc', borderRadius: 8, border: '1px solid #cbd5e1', marginBottom: 20 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <h3 style={{ margin: 0, fontSize: 15, color: '#0f172a', fontWeight: 600 }}>
+                      <i className="fas fa-business-time" style={{ marginRight: 6, color: '#2563eb' }}></i>
+                      Khung giờ làm việc &amp; Nghỉ trưa của công ty
+                    </h3>
+                    <span style={{ fontSize: 12, color: '#64748b' }}>Áp dụng theo Company ID</span>
+                  </div>
+                  <p style={{ margin: '0 0 14px', fontSize: 13, color: '#64748b' }}>
+                    Quy tắc: Giờ vào sớm hơn giờ bắt đầu sẽ được clamp về giờ bắt đầu. Giờ nghỉ trưa không tính công. Tăng ca (OT) tự động tính sau giờ kết thúc làm việc.
+                  </p>
+
+                  <div className="attendance-settings__grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
+                    <div className="form-group">
+                      <label style={{ fontWeight: 600, fontSize: 13, color: '#1e293b' }}>
+                        Giờ bắt đầu làm việc <span style={{ color: '#ef4444' }}>*</span>
+                      </label>
+                      <input
+                        type="time"
+                        id="setting-work-start"
+                        value={settings.workStart || '07:00'}
+                        onChange={event => updateSchedule('workStart', event.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label style={{ fontWeight: 600, fontSize: 13, color: '#1e293b' }}>
+                        Bắt đầu nghỉ trưa <span style={{ color: '#ef4444' }}>*</span>
+                      </label>
+                      <input
+                        type="time"
+                        id="setting-lunch-start"
+                        value={settings.lunchStart || '11:00'}
+                        onChange={event => updateSchedule('lunchStart', event.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label style={{ fontWeight: 600, fontSize: 13, color: '#1e293b' }}>
+                        Kết thúc nghỉ trưa <span style={{ color: '#ef4444' }}>*</span>
+                      </label>
+                      <input
+                        type="time"
+                        id="setting-lunch-end"
+                        value={settings.lunchEnd || '13:00'}
+                        onChange={event => updateSchedule('lunchEnd', event.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label style={{ fontWeight: 600, fontSize: 13, color: '#1e293b' }}>
+                        Giờ kết thúc làm việc <span style={{ color: '#ef4444' }}>*</span>
+                      </label>
+                      <input
+                        type="time"
+                        id="setting-work-end"
+                        value={settings.workEnd || '17:00'}
+                        onChange={event => updateSchedule('workEnd', event.target.value)}
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  {/* Summary card showing calculated periods */}
+                  <div style={{ marginTop: 14, padding: '10px 14px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 13, color: '#1e40af' }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+                      <span><strong>Ca sáng:</strong> {settings.workStart} – {settings.lunchStart} ({morningMins} phút)</span>
+                      <span><strong>Nghỉ trưa:</strong> {settings.lunchStart} – {settings.lunchEnd} (0 công)</span>
+                      <span><strong>Ca chiều:</strong> {settings.lunchEnd} – {settings.workEnd} ({afternoonMins} phút)</span>
+                      <span><strong>Chuẩn 1 công:</strong> {standardMins} phút ({standardHours}h)</span>
+                    </div>
+                  </div>
                 </div>
-                {(settings.holidays || []).length > 0 && <div style={{ display: 'grid', gap: 6, marginTop: 10 }}>
-                  {settings.holidays.map(item => <div key={item.date} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 9px', background: '#f8fafc', borderRadius: 6 }}>
-                    <span><strong>{item.date}</strong>{item.name ? ` — ${item.name}` : ''}</span>
-                    <button type="button" className="btn btn-icon" title="Xoá ngày lễ" onClick={() => removeHoliday(item.date)}><i className="fas fa-trash"></i></button>
-                  </div>)}
-                </div>}
-              </div>
-              <h4 style={{ margin: '18px 0 8px', fontSize: '14px', color: '#1e293b' }}>Cấu hình Cloudinary (Lưu trữ ảnh xác thực)</h4>
-              <div className="attendance-settings__grid">
-                <div className="form-group"><label>Cloud Name</label><input type="text" placeholder="ksny3wwy" value={cloudName} onChange={event => setCloudName(event.target.value)} /></div>
-                <div className="form-group"><label>Upload Preset (Unsigned)</label><input type="text" placeholder="nr5kwa0r" value={uploadPreset} onChange={event => setUploadPreset(event.target.value)} /></div>
-              </div>
-            </>}
+
+                {/* 2. CHỌN CA ĐẶC THÙ (NẾU CÓ) */}
+                <div style={{ marginBottom: 16 }}>
+                  <h4 style={{ margin: '0 0 8px', fontSize: 14, color: '#1e293b' }}>Cài đặt giờ chuẩn theo ca</h4>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+                    {shiftOptions.map(shift => (
+                      <button
+                        key={shift.id}
+                        className={`btn ${selectedShiftId === shift.id ? 'btn-primary' : ''}`}
+                        type="button"
+                        onClick={() => setSelectedShiftId(shift.id)}
+                      >
+                        {shift.name} ({shift.standardCheckIn}–{shift.standardCheckOut})
+                      </button>
+                    ))}
+                  </div>
+                  <div className="attendance-settings__grid">
+                    <div className="form-group">
+                      <label>Giờ vào chuẩn ({selectedShift?.name})</label>
+                      <input
+                        type="time"
+                        value={selectedShift?.standardCheckIn || ''}
+                        onChange={event => updateSelectedShift('standardCheckIn', event.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Giờ ra chuẩn ({selectedShift?.name})</label>
+                      <input
+                        type="time"
+                        value={selectedShift?.standardCheckOut || ''}
+                        onChange={event => updateSelectedShift('standardCheckOut', event.target.value)}
+                        required
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '14px 0', color: '#334155' }}>
+                  <input
+                    type="checkbox"
+                    checked={settings.overtime?.autoCalculate !== false}
+                    onChange={event => setSettings(current => ({
+                      ...current,
+                      overtime: { ...(current.overtime || {}), autoCalculate: event.target.checked }
+                    }))}
+                  />
+                  Tự động tính tăng ca (OT) sau giờ kết thúc làm việc ({settings.workEnd || '17:00'})
+                </label>
+
+                {/* 3. NGÀY LỄ */}
+                <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid #e2e8f0' }}>
+                  <h4 style={{ margin: '0 0 8px', fontSize: 14, color: '#1e293b' }}>Ngày lễ / ngày nghỉ hưởng chế độ</h4>
+                  <p style={{ margin: '0 0 10px', color: '#64748b', fontSize: 13 }}>
+                    Ngày đã khai báo được đánh dấu riêng trong bảng công; không tự tạo Công khi không có dữ liệu chấm công.
+                  </p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'minmax(140px, 1fr) minmax(160px, 1.5fr) auto', gap: 8, alignItems: 'end' }}>
+                    <div className="form-group"><label>Ngày</label><input type="date" value={holidayDate} onChange={event => setHolidayDate(event.target.value)} /></div>
+                    <div className="form-group"><label>Tên ngày lễ</label><input type="text" value={holidayName} onChange={event => setHolidayName(event.target.value)} placeholder="Ví dụ: Quốc khánh" /></div>
+                    <button type="button" className="btn" onClick={addHoliday} disabled={!holidayDate}>Thêm ngày lễ</button>
+                  </div>
+                  {(settings.holidays || []).length > 0 && (
+                    <div style={{ display: 'grid', gap: 6, marginTop: 10 }}>
+                      {settings.holidays.map(item => (
+                        <div key={item.date} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '7px 9px', background: '#f8fafc', borderRadius: 6 }}>
+                          <span><strong>{item.date}</strong>{item.name ? ` — ${item.name}` : ''}</span>
+                          <button type="button" className="btn btn-icon" title="Xoá ngày lễ" onClick={() => removeHoliday(item.date)}><i className="fas fa-trash"></i></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 4. CLOUDINARY */}
+                <h4 style={{ margin: '18px 0 8px', fontSize: '14px', color: '#1e293b' }}>Cấu hình Cloudinary (Lưu trữ ảnh xác thực)</h4>
+                <div className="attendance-settings__grid">
+                  <div className="form-group"><label>Cloud Name</label><input type="text" placeholder="ksny3wwy" value={cloudName} onChange={event => setCloudName(event.target.value)} /></div>
+                  <div className="form-group"><label>Upload Preset (Unsigned)</label><input type="text" placeholder="nr5kwa0r" value={uploadPreset} onChange={event => setUploadPreset(event.target.value)} /></div>
+                </div>
+              </>
+            )}
           </div>
-          <div className="attendance-settings__footer"><button className="btn" type="button" onClick={onClose}>Hủy</button><button className="btn btn-primary" type="submit" disabled={loading || saving}>{saving ? 'Đang lưu...' : 'Lưu cài đặt'}</button></div>
+          <div className="attendance-settings__footer">
+            <button className="btn" type="button" onClick={onClose}>Hủy</button>
+            <button className="btn btn-primary" type="submit" disabled={loading || saving}>
+              {saving ? 'Đang lưu...' : 'Lưu cài đặt'}
+            </button>
+          </div>
         </form>
       </div>
     </div>

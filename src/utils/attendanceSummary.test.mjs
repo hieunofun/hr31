@@ -32,8 +32,8 @@ test('keeps an unmatched source employee and recalculates punches by actual minu
       cong: 0.9,
       congPlus: 0,
       hours: 7.2,
-      vao: '08:20',
-      ra: '17:30'
+      vao: '07:00',
+      ra: '17:00'
     }],
     employees: [],
     month: '2026-08'
@@ -43,7 +43,7 @@ test('keeps an unmatched source employee and recalculates punches by actual minu
   assert.equal(rows[0].employeeCode, '00002')
   assert.equal(rows[0].employeeName, 'Nguyễn Bùi Khánh Vân')
   assert.equal(rows[0].department, 'Văn phòng')
-  // 08:20 → 17:30 = 550 phút; Công được chặn tối đa 1 ngày.
+  // 07:00 → 17:00 (loại 2h trưa theo splitShift) = 480 phút = 1 công, 8h làm việc.
   assert.equal(rows[0].workdays, 1)
   assert.equal(rows[0].days.get('2026-08-01').hours, 8)
 })
@@ -76,7 +76,13 @@ test('recalculates the late report from actual punches and each employee shift',
       }
     ],
     employees,
-    month: '2026-08'
+    month: '2026-08',
+    attendanceSettings: {
+      workStart: '08:30',
+      shifts: {
+        administrative: { standardCheckIn: '08:30', standardCheckOut: '17:30' }
+      }
+    }
   })
 
   const normal = rows.find(row => row.employeeId === 'normal')

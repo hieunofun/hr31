@@ -78,6 +78,15 @@ function HolidaySettings() {
   }, [loadSettings])
 
   const holidays = sortHolidays(settings.holidays)
+  const updateSchedule = (field, value) => {
+    setError('')
+    setNotice('')
+    setSettings(current => {
+      const next = { ...current, [field]: value }
+      return normalizeAttendanceShiftSettings(next)
+    })
+  }
+
   const shiftOptions = getAttendanceShiftOptions(settings)
   const selectedShift = settings.shifts[selectedShiftId]
 
@@ -372,6 +381,65 @@ function HolidaySettings() {
             <div className="holiday-settings-empty">Đang tải cài đặt...</div>
           ) : (
             <>
+              <div style={{ padding: 16, background: '#f8fafc', borderRadius: 8, border: '1px solid #cbd5e1', marginBottom: 20 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <h3 style={{ margin: 0, fontSize: 15, color: '#0f172a', fontWeight: 600 }}>
+                    <i className="fas fa-business-time" style={{ marginRight: 6, color: '#2563eb' }}></i>
+                    Khung giờ làm việc &amp; Nghỉ trưa của công ty
+                  </h3>
+                  <span style={{ fontSize: 12, color: '#64748b' }}>Cài đặt theo công ty</span>
+                </div>
+                <p style={{ margin: '0 0 14px', fontSize: 13, color: '#64748b' }}>
+                  Giờ vào trước giờ bắt đầu sẽ được clamp về giờ bắt đầu. Giờ nghỉ trưa không tính công. Tăng ca (OT) tự động tính sau giờ kết thúc làm việc.
+                </p>
+                <div className="holiday-settings-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12 }}>
+                  <label>
+                    <span style={{ fontWeight: 600 }}>Giờ bắt đầu làm việc [workStart]</span>
+                    <input
+                      type="time"
+                      value={settings.workStart || '07:00'}
+                      onChange={event => updateSchedule('workStart', event.target.value)}
+                      required
+                    />
+                  </label>
+                  <label>
+                    <span style={{ fontWeight: 600 }}>Bắt đầu nghỉ trưa [lunchStart]</span>
+                    <input
+                      type="time"
+                      value={settings.lunchStart || '11:00'}
+                      onChange={event => updateSchedule('lunchStart', event.target.value)}
+                      required
+                    />
+                  </label>
+                  <label>
+                    <span style={{ fontWeight: 600 }}>Kết thúc nghỉ trưa [lunchEnd]</span>
+                    <input
+                      type="time"
+                      value={settings.lunchEnd || '13:00'}
+                      onChange={event => updateSchedule('lunchEnd', event.target.value)}
+                      required
+                    />
+                  </label>
+                  <label>
+                    <span style={{ fontWeight: 600 }}>Giờ kết thúc làm việc [workEnd]</span>
+                    <input
+                      type="time"
+                      value={settings.workEnd || '17:00'}
+                      onChange={event => updateSchedule('workEnd', event.target.value)}
+                      required
+                    />
+                  </label>
+                </div>
+                <div style={{ marginTop: 12, padding: '10px 14px', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 6, fontSize: 13, color: '#1e40af' }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
+                    <span><strong>Ca sáng:</strong> {settings.workStart} – {settings.lunchStart} ({settings.morningMinutes || 0} phút)</span>
+                    <span><strong>Nghỉ trưa:</strong> {settings.lunchStart} – {settings.lunchEnd} (0 công)</span>
+                    <span><strong>Ca chiều:</strong> {settings.lunchEnd} – {settings.workEnd} ({settings.afternoonMinutes || 0} phút)</span>
+                    <span><strong>Chuẩn 1 công:</strong> {settings.standardWorkMinutes || 0} phút ({((settings.standardWorkMinutes || 0) / 60).toFixed(2).replace(/\.00$/, '')}h)</span>
+                  </div>
+                </div>
+              </div>
+
               <div className="holiday-settings-shift-pills">
                 {shiftOptions.map(shift => (
                   <button

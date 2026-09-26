@@ -13,7 +13,8 @@ test('uses the normal morning shift for a non-Sale employee', () => {
   const result = calculateAttendanceTiming({
     employee: { position: 'HR', shift: 'Ca ngày' },
     checkIn: '08:45',
-    checkOut: '17:20'
+    checkOut: '17:20',
+    attendanceSettings: { workStart: '08:30', workEnd: '17:30' }
   })
 
   assert.equal(result.shift.start, '08:30')

@@ -1,7 +1,11 @@
-import { attendanceTimeToMinutes } from './attendanceShift.js'
+import {
+  attendanceTimeToMinutes,
+  DEFAULT_ATTENDANCE_SETTINGS,
+  normalizeAttendanceShiftSettings
+} from './attendanceShift.js'
 
 /**
- * Một ngày công đủ được quy đổi từ đúng 480 phút làm việc thực tế.
+ * Một ngày công đủ được quy đổi từ chuẩn phút làm việc theo cấu hình (mặc định 480 phút).
  * Không dùng số giờ đã làm tròn từ Excel để tính lại tổng tháng.
  */
 export const STANDARD_WORK_MINUTES = 8 * 60
@@ -10,6 +14,7 @@ const finiteNumber = (value, fallback = 0) => {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
 }
+
 export const roundDecimal = (value, digits = 2) => {
   const factor = 10 ** digits
   return Math.round((finiteNumber(value) + Number.EPSILON) * factor) / factor
@@ -17,6 +22,96 @@ export const roundDecimal = (value, digits = 2) => {
 
 const firstPresent = (...values) =>
   values.find(value => value !== null && value !== undefined && String(value).trim() !== '')
+
+/**
+ * Tính số phút trùng lặp giữa khoảng thời gian có mặt và khung giờ làm việc.
+ */
+export const calculateOverlapMinutes = (actualStart, actualEnd, shiftStart, shiftEnd) => {
+  if (
+    actualStart === null || actualStart === undefined ||
+    actualEnd === null || actualEnd === undefined ||
+    shiftStart === null || shiftStart === undefined ||
+    shiftEnd === null || shiftEnd === undefined
+  ) return 0
+
+  const start = Math.max(actualStart, shiftStart)
+  const end = Math.min(actualEnd, shiftEnd)
+  return end > start ? end - start : 0
+}
+
+/**
+ * Giờ vào sớm hơn giờ bắt đầu làm (workStart) được tự động quy về workStart.
+ */
+export const calculateEffectiveCheckIn = (checkIn, workStart = DEFAULT_ATTENDANCE_SETTINGS.workStart) => {
+  const inMinutes = attendanceTimeToMinutes(checkIn)
+  const workStartMinutes = attendanceTimeToMinutes(workStart)
+  if (inMinutes === null) return null
+  if (workStartMinutes === null) return checkIn
+  return inMinutes < workStartMinutes ? workStart : checkIn
+}
+
+/**
+ * Tính số phút làm việc công thường theo 2 khoảng:
+ * - Khoảng sáng: workStart → lunchStart
+ * - Khoảng chiều: lunchEnd → workEnd
+ * Khoảng nghỉ trưa (lunchStart → lunchEnd) không tính công.
+ */
+export const calculateRegularMinutes = ({
+  checkIn,
+  checkOut,
+  workStart = DEFAULT_ATTENDANCE_SETTINGS.workStart,
+  lunchStart = DEFAULT_ATTENDANCE_SETTINGS.lunchStart,
+  lunchEnd = DEFAULT_ATTENDANCE_SETTINGS.lunchEnd,
+  workEnd = DEFAULT_ATTENDANCE_SETTINGS.workEnd
+} = {}) => {
+  const effectiveIn = calculateEffectiveCheckIn(checkIn, workStart)
+  const effectiveInMinutes = attendanceTimeToMinutes(effectiveIn)
+  const outMinutes = attendanceTimeToMinutes(checkOut)
+  if (effectiveInMinutes === null || outMinutes === null) return 0
+  if (outMinutes <= effectiveInMinutes) return 0
+
+  const startMins = attendanceTimeToMinutes(workStart)
+  const lunchStartMins = attendanceTimeToMinutes(lunchStart)
+  const lunchEndMins = attendanceTimeToMinutes(lunchEnd)
+  const endMins = attendanceTimeToMinutes(workEnd)
+
+  const morningMinutes = calculateOverlapMinutes(
+    effectiveInMinutes,
+    outMinutes,
+    startMins,
+    lunchStartMins
+  )
+
+  const afternoonMinutes = calculateOverlapMinutes(
+    effectiveInMinutes,
+    outMinutes,
+    lunchEndMins,
+    endMins
+  )
+
+  return morningMinutes + afternoonMinutes
+}
+
+/**
+ * Tăng ca tự động chỉ tính phần sau giờ kết thúc làm việc (workEnd).
+ */
+export const calculateAutomaticOvertime = ({
+  checkIn,
+  checkOut,
+  workEnd = DEFAULT_ATTENDANCE_SETTINGS.workEnd
+} = {}) => {
+  const inMinutes = attendanceTimeToMinutes(checkIn)
+  const outMinutes = attendanceTimeToMinutes(checkOut)
+  const workEndMinutes = attendanceTimeToMinutes(workEnd)
+  if (inMinutes === null || outMinutes === null || workEndMinutes === null) return 0
+  if (outMinutes <= inMinutes) return 0
+
+  const otStartMinutes = Math.max(inMinutes, workEndMinutes)
+  if (outMinutes > otStartMinutes) {
+    return (outMinutes - otStartMinutes) / 60
+  }
+  return 0
+}
 
 /**
  * Tính số phút giữa cặp Vào/Ra. Ca đêm được nối sang ngày kế tiếp thay vì
@@ -104,11 +199,6 @@ const buildSplitSessions = splitShift => [
   workdays: Math.min(1, Math.max(0, finiteNumber(session.workdays, 0.5)))
 }))
 
-/**
- * Tính fallback cho dữ liệu chia buổi bị thiếu một lượt Vào hoặc Ra.
- * Khi đó máy vẫn có thể cung cấp một Vào đầu và một Ra cuối, nên dùng
- * đúng khoảng đầu-cuối thay vì bỏ qua lượt chấm bị thiếu.
- */
 const calculatePartialSplitSpanWork = ({
   punchPairs = [],
   splitShift
@@ -128,16 +218,10 @@ const calculatePartialSplitSpanWork = ({
     splitShift
   })
 }
-/**
- * Chỉ tính phút thực làm nằm trong khung từng buổi đã cấu hình. Khoảng nghỉ
- * giữa hai buổi không thuộc khung nào nên không bị tính hoặc trừ lần nữa.
- */
+
 export const calculateSplitShiftWork = ({ punchPairs = [], splitShift } = {}) => {
   if (!splitShift?.enabled) return null
   const rawPairs = normalizePunchPairs(punchPairs)
-  // A missing Vào/Ra is handled by the first-to-last fallback in
-  // calculateAttendanceMetrics. Do not silently discard the unmatched punch
-  // and calculate only from the remaining complete pairs.
   if (rawPairs.some(pair => Boolean(pair.checkIn) !== Boolean(pair.checkOut))) return null
 
   const sessions = buildSplitSessions(splitShift)
@@ -165,19 +249,20 @@ export const calculateSplitShiftWork = ({ punchPairs = [], splitShift } = {}) =>
 /**
  * Tính Công/Giờ/Tăng ca cho một bản ghi.
  *
- * - Có đủ Vào/Ra: khi bật chia buổi chỉ tính phần giờ nằm trong từng khung
- *   buổi, bỏ qua giờ nghỉ giữa buổi; ca không chia buổi dùng khoảng Vào→Ra.
- *   Không dùng `hours`, `tongGio` và `cong` cũ do máy/Excel gửi lên.
- * - Không có Vào/Ra: giữ số giờ/công nguồn để không làm mất dữ liệu import
- *   dạng mã công (1, 0.5, P...).
- * - Tăng ca thủ công (TC1/TC2/TC3) luôn được ưu tiên. Tự động tách phần vượt
- *   480 phút chỉ chạy khi bản ghi không đánh dấu `overtimeAutoDisabled`.
+ * Mô hình mới:
+ * - Giờ làm việc và giờ nghỉ trưa được cấu hình trong Cài đặt theo từng công ty.
+ * - Giờ vào sớm hơn workStart được tự động quy về workStart (effectiveCheckIn).
+ * - Giờ nghỉ trưa (lunchStart → lunchEnd) không tính công.
+ * - Tăng ca tự động chỉ tính phần thời gian sau giờ kết thúc làm việc (workEnd).
+ * - Ưu tiên tăng ca thủ công (TC1/TC2/TC3) nếu có.
+ * - Ngày chỉ có 1 lần chấm (thiếu checkOut) giữ nguyên trạng thái thiếu (0 công), không tự suy luận checkOut.
  */
 export const calculateAttendanceMetrics = ({
   log = {},
   checkIn = firstPresent(log.checkIn, log.vao),
   checkOut = firstPresent(log.checkOut, log.ra),
-  standardMinutes = STANDARD_WORK_MINUTES,
+  attendanceSettings = {},
+  standardMinutes,
   breakMinutes = 0,
   autoCalculateOvertime = true,
   punchPairs = log.punchPairs,
@@ -185,64 +270,105 @@ export const calculateAttendanceMetrics = ({
   fallbackHours,
   fallbackWorkdays
 } = {}) => {
-  const standard = Math.max(1, finiteNumber(standardMinutes, STANDARD_WORK_MINUTES))
-  const resolvedPunchPairs = normalizePunchPairs(punchPairs)
-  if (!resolvedPunchPairs.length && checkIn && checkOut) {
-    resolvedPunchPairs.push({ checkIn, checkOut })
-  }
-  const partialSplitMetrics = calculatePartialSplitSpanWork({
-    punchPairs: resolvedPunchPairs,
-    splitShift
-  })
-  const splitMetrics = calculateSplitShiftWork({ punchPairs: resolvedPunchPairs, splitShift })
-  const activeSplitMetrics = partialSplitMetrics || splitMetrics
-  const workedMinutes = activeSplitMetrics?.workedMinutes ?? calculateWorkedMinutes({ checkIn, checkOut, breakMinutes })
-  const hasPunchPair = workedMinutes !== null
+  const resolvedSettings = normalizeAttendanceShiftSettings(
+    attendanceSettings?.workStart
+      ? attendanceSettings
+      : (log?.attendanceSettings?.workStart ? log.attendanceSettings : attendanceSettings)
+  )
+  const { workStart, lunchStart, lunchEnd, workEnd } = resolvedSettings
+  const standard = standardMinutes !== undefined && standardMinutes !== null && Number(standardMinutes) > 0
+    ? Number(standardMinutes)
+    : resolvedSettings.standardWorkMinutes
+
+  const inMinutes = attendanceTimeToMinutes(checkIn)
+  const outMinutes = attendanceTimeToMinutes(checkOut)
+  const hasValidPair = inMinutes !== null && outMinutes !== null && outMinutes > inMinutes
+
   const manual = manualOvertimeHours(log)
   const sourceHours = finiteNumber(
     firstPresent(fallbackHours, log.hours, log.soGio, log.gio),
     0
   )
 
-  if (!hasPunchPair) {
+  if (!hasValidPair) {
     const sourceWorkdays = fallbackWorkdays !== undefined && fallbackWorkdays !== null
       ? Math.max(0, finiteNumber(fallbackWorkdays))
       : Math.min(Math.max(0, sourceHours * 60) / standard, 1)
     return {
       hasPunchPair: false,
+      effectiveCheckIn: null,
+      checkIn: checkIn || null,
+      checkOut: checkOut || null,
       workedMinutes: Math.max(0, sourceHours * 60),
       regularMinutes: Math.min(Math.max(0, sourceHours * 60), standard),
       overtimeMinutes: manual.hasValue ? manual.hours * 60 : 0,
       hours: Math.max(0, sourceHours),
       regularWorkdays: sourceWorkdays,
       overtimeHours: manual.hasValue ? manual.hours : 0,
-      overtimeSource: manual.hasValue ? 'manual' : 'none'
+      overtimeSource: manual.hasValue ? 'manual' : 'none',
+      standardWorkMinutes: standard,
+      calculationMode: 'source-value'
     }
   }
 
-  const regularMinutes = Math.min(workedMinutes, standard)
-  const excessMinutes = Math.max(0, workedMinutes - standard)
+  // Hỗ trợ cấu hình splitShift phụ nếu có ca riêng biệt
+  const resolvedPunchPairs = normalizePunchPairs(punchPairs)
+  if (!resolvedPunchPairs.length && checkIn && checkOut) {
+    resolvedPunchPairs.push({ checkIn, checkOut })
+  }
+  const splitMetrics = splitShift?.enabled
+    ? (calculatePartialSplitSpanWork({ punchPairs: resolvedPunchPairs, splitShift }) ||
+       calculateSplitShiftWork({ punchPairs: resolvedPunchPairs, splitShift }))
+    : null
+
+  const effectiveCheckIn = calculateEffectiveCheckIn(checkIn, workStart)
+  const regularMinutes = splitMetrics
+    ? splitMetrics.workedMinutes
+    : calculateRegularMinutes({
+        checkIn,
+        checkOut,
+        workStart,
+        lunchStart,
+        lunchEnd,
+        workEnd
+      })
+
   const automaticAllowed = autoCalculateOvertime && !log.overtimeAutoDisabled
+  const autoOvertimeHours = !splitMetrics && automaticAllowed
+    ? calculateAutomaticOvertime({
+        checkIn,
+        checkOut,
+        workEnd
+      })
+    : 0
+
   const overtimeHours = manual.hasValue
     ? manual.hours
-    : automaticAllowed
-      ? excessMinutes / 60
-      : 0
+    : autoOvertimeHours
+
+  const regularWorkdays = splitMetrics
+    ? splitMetrics.regularWorkdays
+    : Math.min(regularMinutes / standard, 1.0)
+
+  const workedMinutes = splitMetrics
+    ? splitMetrics.workedMinutes
+    : regularMinutes
 
   return {
     hasPunchPair: true,
+    effectiveCheckIn,
+    checkIn,
+    checkOut,
     workedMinutes,
     regularMinutes,
     overtimeMinutes: overtimeHours * 60,
-    // Giờ công chuẩn không vượt quá một ca chính. Phần vượt chuẩn được
-    // phản ánh riêng qua overtimeHours, nên ca 08:30–17:30 là 8 giờ công,
-    // không phải 9 giờ công.
     hours: regularMinutes / 60,
-    regularWorkdays: activeSplitMetrics?.regularWorkdays ?? regularMinutes / standard,
+    regularWorkdays,
     overtimeHours,
     overtimeSource: manual.hasValue ? 'manual' : automaticAllowed ? 'automatic' : 'disabled',
-    calculationMode: activeSplitMetrics ? 'split-shift' : 'full-day',
-    splitShiftBreakdown: activeSplitMetrics?.breakdown || []
+    standardWorkMinutes: standard,
+    calculationMode: splitMetrics ? 'split-shift' : 'schedule',
+    splitShiftBreakdown: splitMetrics?.breakdown || []
   }
 }
 
@@ -267,19 +393,18 @@ export const getAttendanceHoliday = (date, attendanceSettings = {}) => {
  * Mô tả công thức công ngày để hiện tooltip / chú thích trên bảng ma trận.
  */
 export const describeDayWorkFormula = (day = {}, {
-  standardMinutes = STANDARD_WORK_MINUTES,
-  displayCode = ''
+  standardMinutes,
+  displayCode = '',
+  attendanceSettings = {}
 } = {}) => {
   const code = String(displayCode || '').trim().toUpperCase()
-  const standard = Math.max(1, finiteNumber(standardMinutes, STANDARD_WORK_MINUTES))
+  const settings = normalizeAttendanceShiftSettings(attendanceSettings)
+  const standard = Math.max(1, finiteNumber(standardMinutes, settings.standardWorkMinutes))
   const checkIn = String(day.checkIn || day.vao || '').trim()
   const checkOut = String(day.checkOut || day.ra || '').trim()
-  const workedMinutes = finiteNumber(
-    day.workedMinutes,
-    checkIn && checkOut
-      ? (calculateWorkedMinutes({ checkIn, checkOut }) || 0)
-      : finiteNumber(day.hoursExact ?? day.hours) * 60
-  )
+  const regularMinutes = day.regularMinutes !== undefined
+    ? finiteNumber(day.regularMinutes)
+    : finiteNumber(day.workedMinutes, checkIn && checkOut ? calculateRegularMinutes({ checkIn, checkOut, ...settings }) : finiteNumber(day.hoursExact ?? day.hours) * 60)
   const workdays = finiteNumber(day.workdaysExact ?? day.workdays)
   const holidayLabel = day.holidayName
     ? `Ngày lễ: ${day.holidayName}`
@@ -312,13 +437,16 @@ export const describeDayWorkFormula = (day = {}, {
   }
 
   if (checkIn && checkOut) {
-    const capped = Math.min(workedMinutes, standard)
-    const cong = roundDecimal(capped / standard, 4)
+    const cong = roundDecimal(Math.min(regularMinutes / standard, 1), 4)
+    const effectiveIn = day.effectiveCheckIn || calculateEffectiveCheckIn(checkIn, settings.workStart)
+    const inPart = effectiveIn && effectiveIn !== checkIn ? `${checkIn} (quy về ${effectiveIn})→${checkOut}` : `${checkIn}→${checkOut}`
     const parts = [
-      `${checkIn}→${checkOut} = ${Math.round(workedMinutes)}p`,
-      `÷ ${standard}p = ${roundDecimal(cong)} công`
+      `${inPart}`,
+      `Công chuẩn: ${Math.round(regularMinutes)}p ÷ ${standard}p = ${roundDecimal(cong)} công`
     ]
-    if (workedMinutes > standard) parts.push('(tối đa 1 công/ngày)')
+    if (finiteNumber(day.overtimeHours) > 0) {
+      parts.push(`Tăng ca: ${roundDecimal(day.overtimeHours)}h`)
+    }
     if (holidayLabel) parts.push(holidayLabel)
     return parts.join(' · ')
   }

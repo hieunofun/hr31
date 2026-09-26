@@ -1434,6 +1434,7 @@ function AttendanceImportModal({
           log,
           checkIn: log.vao || log.checkIn,
           checkOut: log.ra || log.checkOut,
+          attendanceSettings,
           punchPairs: log.punchPairs,
           splitShift: shift?.splitShift,
           standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,

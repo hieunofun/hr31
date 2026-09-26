@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
+import { getCompanyIdForUser } from '../utils/companyContext'
 import { supabase } from '../services/supabase'
 import { fbGet, fbUpdate, fbGetAttendanceByEmployee } from '../services/firebase'
 import { uploadToCloudinary, getCloudinaryConfig, saveCloudinaryConfig } from '../utils/cloudinary'
@@ -53,6 +54,7 @@ const displayDate = value => {
 
 function OnlineAttendance() {
   const { user } = useAuth()
+  const companyId = getCompanyIdForUser(user)
   const isAdminOrManager = user?.role === 'admin' || user?.role === 'hr' || user?.role === 'manager'
   const [today, setToday] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -138,7 +140,7 @@ function OnlineAttendance() {
 
   // Tải cài đặt ca và Cloudinary ban đầu
   useEffect(() => {
-    fbGet('hr/attendanceSettings/default')
+    fbGet('hr/attendanceSettings/default', companyId)
       .then(settings => {
         const normalized = normalizeAttendanceShiftSettings(settings)
         setAttendanceSettings(normalized)

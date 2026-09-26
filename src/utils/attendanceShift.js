@@ -1,9 +1,20 @@
 import { normalizeString } from './helpers.js'
 
+/**
+ * Cấu hình chấm công mặc định tập trung duy nhất của toàn hệ thống.
+ * Không hard-code các mốc giờ này ở các function tính toán khác.
+ */
+export const DEFAULT_ATTENDANCE_SETTINGS = Object.freeze({
+  workStart: '07:00',
+  lunchStart: '11:00',
+  lunchEnd: '13:00',
+  workEnd: '17:00'
+})
+
 export const DEFAULT_ATTENDANCE_SHIFT = Object.freeze({
   name: 'Ca Hành chính',
-  start: '08:30',
-  end: '17:30'
+  start: DEFAULT_ATTENDANCE_SETTINGS.workStart,
+  end: DEFAULT_ATTENDANCE_SETTINGS.workEnd
 })
 
 export const SALE_ATTENDANCE_SHIFT = Object.freeze({
@@ -19,6 +30,43 @@ export const ATTENDANCE_SHIFT_IDS = Object.freeze({
 
 const firstValue = (...values) =>
   values.find(value => value !== null && value !== undefined && String(value).trim() !== '')
+
+export const validateAttendanceSettings = (settings = {}) => {
+  const workStart = attendanceTimeToMinutes(settings?.workStart)
+  const lunchStart = attendanceTimeToMinutes(settings?.lunchStart)
+  const lunchEnd = attendanceTimeToMinutes(settings?.lunchEnd)
+  const workEnd = attendanceTimeToMinutes(settings?.workEnd)
+
+  if (workStart === null || lunchStart === null || lunchEnd === null || workEnd === null) {
+    return {
+      isValid: false,
+      error: 'Vui lòng nhập đầy đủ các mốc: Giờ bắt đầu làm, Bắt đầu nghỉ trưa, Kết thúc nghỉ trưa, Kết thúc làm.'
+    }
+  }
+
+  if (workStart >= lunchStart) {
+    return {
+      isValid: false,
+      error: 'Giờ bắt đầu làm việc phải trước giờ bắt đầu nghỉ trưa.'
+    }
+  }
+
+  if (lunchStart >= lunchEnd) {
+    return {
+      isValid: false,
+      error: 'Giờ bắt đầu nghỉ trưa phải trước giờ kết thúc nghỉ trưa.'
+    }
+  }
+
+  if (lunchEnd >= workEnd) {
+    return {
+      isValid: false,
+      error: 'Giờ kết thúc nghỉ trưa phải trước giờ kết thúc làm việc.'
+    }
+  }
+
+  return { isValid: true, error: '' }
+}
 
 const normalizeTime = value => {
   const text = String(value || '').trim()
@@ -74,8 +122,10 @@ const normalizeConfiguredShift = (id, value, fallback) => {
     splitShift: normalizeSplitShift(source.splitShift || source.splitSessions)
   }
 }
+
 export const normalizeAttendanceShiftSettings = (settings = {}) => {
   const source = settings && typeof settings === 'object' ? settings : {}
+
   const storedShifts = source.shifts && typeof source.shifts === 'object'
     ? source.shifts
     : {}
@@ -83,9 +133,62 @@ export const normalizeAttendanceShiftSettings = (settings = {}) => {
     ? storedShifts.find(shift => shift?.id === id)
     : storedShifts[id]
   const administrativeSource = findStoredShift(ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE)
+
+  const rawWorkStart = normalizeTime(source.workStart || source.standardCheckIn || administrativeSource?.standardCheckIn)
+  const rawLunchStart = normalizeTime(source.lunchStart)
+  const rawLunchEnd = normalizeTime(source.lunchEnd)
+  const rawWorkEnd = normalizeTime(source.workEnd || source.standardCheckOut || administrativeSource?.standardCheckOut)
+
+  const candidateWorkStart = rawWorkStart || DEFAULT_ATTENDANCE_SETTINGS.workStart
+  const candidateLunchStart = rawLunchStart || DEFAULT_ATTENDANCE_SETTINGS.lunchStart
+  const candidateLunchEnd = rawLunchEnd || DEFAULT_ATTENDANCE_SETTINGS.lunchEnd
+  const candidateWorkEnd = rawWorkEnd || DEFAULT_ATTENDANCE_SETTINGS.workEnd
+
+  const validation = validateAttendanceSettings({
+    workStart: candidateWorkStart,
+    lunchStart: candidateLunchStart,
+    lunchEnd: candidateLunchEnd,
+    workEnd: candidateWorkEnd
+  })
+
+  const workStart = validation.isValid ? candidateWorkStart : DEFAULT_ATTENDANCE_SETTINGS.workStart
+  const lunchStart = validation.isValid ? candidateLunchStart : DEFAULT_ATTENDANCE_SETTINGS.lunchStart
+  const lunchEnd = validation.isValid ? candidateLunchEnd : DEFAULT_ATTENDANCE_SETTINGS.lunchEnd
+  const workEnd = validation.isValid ? candidateWorkEnd : DEFAULT_ATTENDANCE_SETTINGS.workEnd
+
+  const startMins = attendanceTimeToMinutes(workStart) ?? 420
+  const lunchStartMins = attendanceTimeToMinutes(lunchStart) ?? 660
+  const lunchEndMins = attendanceTimeToMinutes(lunchEnd) ?? 780
+  const endMins = attendanceTimeToMinutes(workEnd) ?? 1020
+
+  const morningMinutes = Math.max(0, lunchStartMins - startMins)
+  const afternoonMinutes = Math.max(0, endMins - lunchEndMins)
+  const dynamicStandardMinutes = morningMinutes + afternoonMinutes
+  const standardWorkMinutes = dynamicStandardMinutes > 0 ? dynamicStandardMinutes : 480
+
+  const morningWorkdays = standardWorkMinutes > 0 ? morningMinutes / standardWorkMinutes : 0.5
+  const afternoonWorkdays = standardWorkMinutes > 0 ? afternoonMinutes / standardWorkMinutes : 0.5
+
+  // Tận dụng splitShift: tạo cấu hình 2 buổi chuẩn (sáng + chiều) tách giờ nghỉ trưa
+  const defaultAdministrativeSplitShift = {
+    enabled: true,
+    morning: {
+      start: workStart,
+      end: lunchStart,
+      workdays: morningWorkdays
+    },
+    afternoon: {
+      start: lunchEnd,
+      end: workEnd,
+      workdays: afternoonWorkdays
+    }
+  }
+
   const legacyAdministrative = administrativeSource || {
-    standardCheckIn: source.standardCheckIn,
-    standardCheckOut: source.standardCheckOut
+    name: 'Ca Hành chính',
+    standardCheckIn: workStart,
+    standardCheckOut: workEnd,
+    splitShift: defaultAdministrativeSplitShift
   }
   const additionalShifts = Object.fromEntries(
     (Array.isArray(storedShifts)
@@ -99,12 +202,6 @@ export const normalizeAttendanceShiftSettings = (settings = {}) => {
       })])
   )
 
-  const configuredStandardMinutes = Number(
-    source.standardWorkMinutes ?? source.standardMinutes ?? 480
-  )
-  const standardWorkMinutes = Number.isFinite(configuredStandardMinutes) && configuredStandardMinutes > 0
-    ? Math.round(configuredStandardMinutes)
-    : 480
   const configuredBreakMinutes = Number(source.unpaidBreakMinutes ?? source.breakMinutes ?? 0)
   const unpaidBreakMinutes = Number.isFinite(configuredBreakMinutes) && configuredBreakMinutes >= 0
     ? Math.round(configuredBreakMinutes)
@@ -126,10 +223,14 @@ export const normalizeAttendanceShiftSettings = (settings = {}) => {
 
   return {
     timezone: source.timezone || 'Asia/Ho_Chi_Minh',
+    workStart,
+    lunchStart,
+    lunchEnd,
+    workEnd,
+    morningMinutes,
+    afternoonMinutes,
     standardWorkMinutes,
     unpaidBreakMinutes,
-    // HR vẫn là người duyệt tăng ca. Có thể bật rule tự động cho dữ liệu
-    // online/manual, còn import Excel tự đánh dấu tắt ở từng bản ghi.
     overtime: {
       autoCalculate: overtimeSource.autoCalculate !== false
     },
@@ -138,7 +239,7 @@ export const normalizeAttendanceShiftSettings = (settings = {}) => {
       [ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE]: normalizeConfiguredShift(
         ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE,
         legacyAdministrative,
-        DEFAULT_ATTENDANCE_SHIFT
+        { name: 'Ca Hành chính', start: workStart, end: workEnd }
       ),
       [ATTENDANCE_SHIFT_IDS.SALE_MORNING]: normalizeConfiguredShift(
         ATTENDANCE_SHIFT_IDS.SALE_MORNING,
@@ -146,7 +247,9 @@ export const normalizeAttendanceShiftSettings = (settings = {}) => {
         SALE_ATTENDANCE_SHIFT
       ),
       ...additionalShifts
-    }
+    },
+    standardCheckIn: workStart,
+    standardCheckOut: workEnd
   }
 }
 
@@ -155,17 +258,19 @@ export const getAttendanceShiftOptions = settings =>
 
 export const buildAttendanceShiftSettingsPayload = settings => {
   const normalized = normalizeAttendanceShiftSettings(settings)
-  const administrative = normalized.shifts[ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE]
   return {
     timezone: normalized.timezone,
+    workStart: normalized.workStart,
+    lunchStart: normalized.lunchStart,
+    lunchEnd: normalized.lunchEnd,
+    workEnd: normalized.workEnd,
     standardWorkMinutes: normalized.standardWorkMinutes,
     unpaidBreakMinutes: normalized.unpaidBreakMinutes,
     overtime: normalized.overtime,
     holidays: normalized.holidays,
     shifts: normalized.shifts,
-    // Giữ hai trường cũ để các bản triển khai chưa cập nhật vẫn đọc đúng ca hành chính.
-    standardCheckIn: administrative.standardCheckIn,
-    standardCheckOut: administrative.standardCheckOut
+    standardCheckIn: normalized.workStart,
+    standardCheckOut: normalized.workEnd
   }
 }
 

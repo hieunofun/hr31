@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useAuth } from '../contexts/AuthContext'
+import { getCompanyIdForUser } from '../utils/companyContext'
 import AttendanceImportModal from '../components/AttendanceImportModal'
 import AttendanceModal, { dayOfWeekFromDate, formatTimeHM } from '../components/AttendanceModal'
 import AttendanceSettingsModal from '../components/AttendanceSettingsModal'

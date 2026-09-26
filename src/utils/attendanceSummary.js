@@ -4,6 +4,7 @@ import {
   applyCalculatedAttendanceTiming,
   attendanceTimeToMinutes,
   formatAttendanceTime,
+  normalizeAttendanceShiftSettings,
   resolveAttendanceShift
 } from './attendanceShift.js'
 import {
@@ -85,8 +86,9 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
   let splitShiftBreakdown = []
   const sampleLog = logs[0] || {}
   const resolvedShift = resolveAttendanceShift(employee, sampleLog, attendanceSettings)
-  const standardCheckIn = formatAttendanceTime(resolvedShift?.start || resolvedShift?.standardCheckIn)
-  const standardCheckOut = formatAttendanceTime(resolvedShift?.end || resolvedShift?.standardCheckOut)
+  const normalizedSettings = normalizeAttendanceShiftSettings(attendanceSettings)
+  const standardCheckIn = normalizedSettings.workStart || formatAttendanceTime(resolvedShift?.start || resolvedShift?.standardCheckIn)
+  const standardCheckOut = normalizedSettings.workEnd || formatAttendanceTime(resolvedShift?.end || resolvedShift?.standardCheckOut)
 
   logs.forEach(sourceLog => {
     const preservesSourceValues = ['source-value', 'matrix-value'].includes(sourceLog.calculationMode)
@@ -169,13 +171,13 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
     }
   })
 
-  const standardMinutes = Number(attendanceSettings.standardWorkMinutes) > 0
+  const standardMinutes = Number(normalizedSettings.standardWorkMinutes) > 0
     ? Number(attendanceSettings.standardWorkMinutes)
     : STANDARD_WORK_MINUTES
-  const breakMinutes = Number(attendanceSettings.unpaidBreakMinutes) >= 0
+  const breakMinutes = Number(normalizedSettings.unpaidBreakMinutes) >= 0
     ? Number(attendanceSettings.unpaidBreakMinutes)
     : 0
-  const autoCalculateOvertime = attendanceSettings?.overtime?.autoCalculate !== false
+  const autoCalculateOvertime = normalizedSettings?.overtime?.autoCalculate !== false
   if (actualPunches.length > 0) {
     const firstPunch = actualPunches
       .slice()
@@ -193,6 +195,7 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
       },
       checkIn: firstPunch.checkIn,
       checkOut: lastPunch.checkOut,
+      attendanceSettings: normalizedSettings,
       standardMinutes,
       breakMinutes,
       autoCalculateOvertime,
@@ -207,6 +210,7 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
   } else if (!hasSourceWorkday) {
     const metrics = calculateAttendanceMetrics({
       log: logs[0] || {},
+      attendanceSettings: normalizedSettings,
       standardMinutes,
       breakMinutes,
       autoCalculateOvertime,
