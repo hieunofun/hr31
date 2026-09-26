@@ -392,3 +392,88 @@ test('Mô tả công thức chấm công đúng theo logic mới', () => {
   assert.match(formula, /Công chuẩn: 480p ÷ 480p = 1 công/)
   assert.match(formula, /Tăng ca: 0.5h/)
 })
+
+// ==================================================
+// 37. YÊU CẦU TEST CHẤM CÔNG VÀ TĂNG CA MỚI
+// ==================================================
+test('Yêu cầu mới: 07:00 → 17:00 = 1 công, 0 OT', () => {
+  const splitShift = {
+    enabled: true,
+    morning: { start: '07:00', end: '11:00', workdays: 0.5 },
+    afternoon: { start: '13:00', end: '17:00', workdays: 0.5 }
+  }
+  const result = calculateAttendanceMetrics({
+    checkIn: '07:00',
+    checkOut: '17:00',
+    splitShift
+  })
+  assert.equal(result.regularWorkdays, 1.0)
+  assert.equal(result.overtimeHours, 0)
+  assert.equal(result.overtimeMinutes, 0)
+})
+
+test('Yêu cầu mới: 06:45 → 17:30 = 1 công, 0.5h OT', () => {
+  const splitShift = {
+    enabled: true,
+    morning: { start: '07:00', end: '11:00', workdays: 0.5 },
+    afternoon: { start: '13:00', end: '17:00', workdays: 0.5 }
+  }
+  const result = calculateAttendanceMetrics({
+    checkIn: '06:45',
+    checkOut: '17:30',
+    splitShift
+  })
+  assert.equal(result.regularWorkdays, 1.0)
+  assert.equal(result.overtimeHours, 0.5)
+  assert.equal(result.overtimeMinutes, 30)
+})
+
+test('Yêu cầu mới: 07:05 → 23:34 = OT 6h34 (394 phút)', () => {
+  const splitShift = {
+    enabled: true,
+    morning: { start: '07:00', end: '11:00', workdays: 0.5 },
+    afternoon: { start: '13:00', end: '17:00', workdays: 0.5 }
+  }
+  const result = calculateAttendanceMetrics({
+    checkIn: '07:05',
+    checkOut: '23:34',
+    splitShift
+  })
+  assert.equal(result.overtimeMinutes, 394)
+  const otH = Math.floor(result.overtimeMinutes / 60)
+  const otM = Math.round(result.overtimeMinutes % 60)
+  assert.equal(`${otH}h${otM < 10 ? '0' : ''}${otM}`, '6h34')
+})
+
+test('Yêu cầu mới: splitShift vẫn loại 11:00–13:00 khỏi công chuẩn', () => {
+  const splitShift = {
+    enabled: true,
+    morning: { start: '07:00', end: '11:00', workdays: 0.5 },
+    afternoon: { start: '13:00', end: '17:00', workdays: 0.5 }
+  }
+  const result = calculateAttendanceMetrics({
+    checkIn: '07:00',
+    checkOut: '17:00',
+    splitShift
+  })
+  assert.equal(result.workedMinutes, 480)
+  assert.equal(result.regularMinutes, 480)
+  assert.equal(result.hours, 8)
+  assert.equal(result.regularWorkdays, 1.0)
+})
+
+test('Yêu cầu mới: manual OT vẫn ưu tiên hơn auto OT', () => {
+  const splitShift = {
+    enabled: true,
+    morning: { start: '07:00', end: '11:00', workdays: 0.5 },
+    afternoon: { start: '13:00', end: '17:00', workdays: 0.5 }
+  }
+  const result = calculateAttendanceMetrics({
+    log: { tc1: 2.0 },
+    checkIn: '07:00',
+    checkOut: '23:34',
+    splitShift
+  })
+  assert.equal(result.overtimeHours, 2.0)
+  assert.equal(result.overtimeSource, 'manual')
+})

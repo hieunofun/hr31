@@ -146,7 +146,7 @@ function AttendanceImportModal({
       // Import Excel không tự trừ lunch cứng; nếu doanh nghiệp muốn trừ
       // khoảng nghỉ thì khai báo rõ trong Cài đặt chấm công.
       breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
-      autoCalculateOvertime: false,
+      autoCalculateOvertime: attendanceSettings?.overtime?.autoCalculate !== false,
       splitShift: shift?.splitShift
     })
     const hours = metrics.hours
@@ -173,7 +173,7 @@ function AttendanceImportModal({
       checkOut: checkOutStr,
       hours,
       regularWorkdays: metrics.regularWorkdays,
-      overtimeHours: 0,
+      overtimeHours: metrics.overtimeHours,
       status,
       lateMinutes,
       earlyMinutes,
@@ -238,7 +238,7 @@ function AttendanceImportModal({
       checkOut: checkOutStr,
       standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
       breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
-      autoCalculateOvertime: false,
+      autoCalculateOvertime: attendanceSettings?.overtime?.autoCalculate !== false,
       punchPairs,
       splitShift: resolvedShift?.splitShift,
       fallbackHours: Number(extra.hours ?? stats.hours ?? 0) || 0,
@@ -330,7 +330,9 @@ function AttendanceImportModal({
       workedMinutes: metrics.workedMinutes,
       regularMinutes: metrics.regularMinutes,
       overtimeMinutes: metrics.overtimeMinutes,
-      overtimeAutoDisabled: true,
+      overtimeAutoDisabled: extra.overtimeAutoDisabled !== undefined
+        ? Boolean(extra.overtimeAutoDisabled)
+        : (hasActualPunchPair ? false : Boolean(extra.syntheticPunch)),
       syntheticPunch: Boolean(extra.syntheticPunch),
       punches: stats.punches || [],
       punchPairs,
@@ -1439,7 +1441,7 @@ function AttendanceImportModal({
           splitShift: shift?.splitShift,
           standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
           breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
-          autoCalculateOvertime: false,
+          autoCalculateOvertime: attendanceSettings?.overtime?.autoCalculate !== false,
           fallbackHours: log.hours,
           fallbackWorkdays: log.cong
         })
@@ -1452,6 +1454,11 @@ function AttendanceImportModal({
           tongGio: metrics.hours + (Number(log.gioPlus) || 0),
           workedMinutes: metrics.workedMinutes,
           regularMinutes: metrics.regularMinutes,
+          overtimeMinutes: metrics.overtimeMinutes,
+          overtimeHours: metrics.overtimeHours,
+          overtimeAutoDisabled: log.overtimeAutoDisabled !== undefined
+            ? Boolean(log.overtimeAutoDisabled)
+            : false,
           calculationMode: metrics.calculationMode,
           splitShiftBreakdown: metrics.splitShiftBreakdown
         } : timed

@@ -334,7 +334,7 @@ export const calculateAttendanceMetrics = ({
       })
 
   const automaticAllowed = autoCalculateOvertime && !log.overtimeAutoDisabled
-  const autoOvertimeHours = !splitMetrics && automaticAllowed
+  const autoOvertimeHours = automaticAllowed
     ? calculateAutomaticOvertime({
         checkIn,
         checkOut,

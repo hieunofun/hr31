@@ -584,7 +584,7 @@ function HolidaySettings() {
                     overtime: { ...(current.overtime || {}), autoCalculate: event.target.checked }
                   }))}
                 />
-                Tự động tính phần vượt 480 phút (HR có thể tắt để tự đánh dấu Excel)
+                Tự động tính tăng ca sau giờ kết thúc ca (HR có thể tắt để tự đánh dấu Excel)
               </label>
             </>
           )}
