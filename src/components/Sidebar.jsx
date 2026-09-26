@@ -55,8 +55,8 @@ function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <img src="/speego-logo.png" alt="SpeeGo Logistics" />
-        <span>SpeeGo HR</span>
+        <img src="/deoca-logo.png" alt="DEOCA GROUP" />
+        <span>DEOCA HR</span>
       </div>
 
       {accountingOnly ? (

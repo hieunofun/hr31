@@ -60,9 +60,9 @@ function Login() {
       <section className="system-login__form-panel">
         <div className="system-login__form-wrap">
           <div className="system-login__intro">
-            <img src="/speego-logo.png" alt="SpeeGo Logistics" />
+            <img src="/deoca-logo.png" alt="DEOCA GROUP" />
             <h1>Đăng nhập hệ thống</h1>
-            <p>Hệ thống quản lý nhân sự SpeeGo</p>
+            <p>Hệ thống quản lý nhân sự DEOCA GROUP</p>
           </div>
 
           {error && <div className="system-login__error"><i className="fas fa-exclamation-circle"></i><span>{error}</span></div>}
@@ -70,7 +70,7 @@ function Login() {
           <form onSubmit={handleLogin}>
             <label className="system-login__field">
               <span>Email</span>
-              <div><i className="fas fa-envelope"></i><input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="nhanvien@speego.vn" autoComplete="username" required /></div>
+              <div><i className="fas fa-envelope"></i><input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="email@congty.vn" autoComplete="username" required /></div>
             </label>
             <label className="system-login__field">
               <span>Mật khẩu</span>
@@ -112,14 +112,14 @@ function Login() {
 
           <p className="system-login__employee-link">Nhân viên có thể đăng nhập tại đây hoặc <Link to="/employee-login">mở trang nhân viên</Link>.</p>
         </div>
-        <footer>© 2026 SpeeGo Logistics HR Management System</footer>
+        <footer>© 2026 DEOCA GROUP HR Management System</footer>
       </section>
 
-      <aside className="system-login__branding" aria-label="SpeeGo Logistics">
+      <aside className="system-login__branding" aria-label="DEOCA GROUP">
         <div className="system-login__branding-content">
-          <div className="system-login__brand-logo"><img src="/speego-logo.png" alt="SpeeGo Logistics" /></div>
-          <h2>SPEEGO LOGISTICS</h2>
-          <p className="system-login__slogan">NHANH CHÓNG · CHÍNH XÁC</p>
+          <div className="system-login__brand-logo"><img src="/deoca-logo.png" alt="DEOCA GROUP" /></div>
+          <h2>DEOCA GROUP</h2>
+          <p className="system-login__slogan">NGHĨ KHÁC BIỆT · TẠO CÁCH BIỆT</p>
           <div className="system-login__accent"></div>
           <p className="system-login__description">Hệ thống quản lý nhân sự tập trung, chuyên nghiệp và hiệu quả.</p>
         </div>

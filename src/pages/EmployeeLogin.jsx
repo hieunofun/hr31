@@ -34,12 +34,12 @@ function EmployeeLogin() {
   return (
     <main className="employee-login">
       <section className="employee-login__card">
-        <img src="/speego-logo.png" alt="SpeeGo Logistics" />
+        <img src="/deoca-logo.png" alt="DEOCA GROUP" />
         <h1>Đăng nhập nhân viên</h1>
         <p>Đăng nhập để xem Bảng công của bạn</p>
         {error && <div className="employee-login__error">{error}</div>}
         <form onSubmit={handleSubmit}>
-          <label><span>Email nhân viên</span><input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="nhanvien@speego.vn" autoComplete="username" required /></label>
+          <label><span>Email nhân viên</span><input type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="email@congty.vn" autoComplete="username" required /></label>
           <label><span>Mật khẩu</span><input type="password" value={password} onChange={event => setPassword(event.target.value)} placeholder="Nhập mật khẩu" autoComplete="current-password" required /></label>
           <button type="submit" disabled={loading}>{loading ? 'Đang đăng nhập...' : 'Đăng nhập'}</button>
         </form>
