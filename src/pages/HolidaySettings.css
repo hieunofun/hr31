@@ -20,6 +20,39 @@
   color: #64748b;
 }
 
+.holiday-settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid #dbe5f0;
+}
+
+.holiday-settings-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: #64748b;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.holiday-settings-tab:hover {
+  color: #0f3f78;
+  background: #f8fafc;
+}
+
+.holiday-settings-tab.is-active {
+  color: #0f3f78;
+  border-bottom-color: #0f3f78;
+}
+
 .holiday-settings-card {
   padding: 20px;
   border: 1px solid #e2e8f0;
@@ -35,14 +68,18 @@
   align-items: end;
 }
 
-.holiday-settings-form label {
+.holiday-settings-form label,
+.holiday-settings-grid label {
   display: grid;
   gap: 6px;
   color: #334155;
   font-weight: 600;
 }
 
-.holiday-settings-form input {
+.holiday-settings-form input,
+.holiday-settings-grid input,
+.holiday-settings-session input,
+.holiday-settings-penalty-row input {
   width: 100%;
   min-height: 40px;
   padding: 8px 10px;
@@ -103,6 +140,118 @@
   background: #dcfce7;
 }
 
+.holiday-settings-shift-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.holiday-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.holiday-settings-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  color: #334155;
+}
+
+.holiday-settings-split-card {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.holiday-settings-split-toggle {
+  margin-top: 0;
+}
+
+.holiday-settings-split-toggle > span {
+  display: grid;
+  gap: 3px;
+}
+
+.holiday-settings-split-toggle strong {
+  color: #0f3f78;
+}
+
+.holiday-settings-split-toggle small,
+.holiday-settings-split-note {
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.holiday-settings-session-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.holiday-settings-session {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #dbe5f0;
+  border-radius: 9px;
+  background: #fff;
+}
+
+.holiday-settings-session h3 {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #0f3f78;
+  font-size: 15px;
+}
+
+.holiday-settings-session label {
+  display: grid;
+  gap: 6px;
+  color: #334155;
+  font-weight: 600;
+}
+
+.holiday-settings-split-note {
+  margin: 12px 0 0;
+  line-height: 1.5;
+}
+
+.holiday-settings-penalty-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.holiday-settings-penalty-list {
+  display: grid;
+  gap: 8px;
+}
+
+.holiday-settings-penalty-head,
+.holiday-settings-penalty-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.6fr) minmax(140px, .7fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.holiday-settings-penalty-head {
+  padding: 0 2px 4px;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 @media (max-width: 760px) {
   .holiday-settings-head,
   .holiday-settings-item div {
@@ -110,7 +259,21 @@
     flex-direction: column;
   }
 
-  .holiday-settings-form {
+  .holiday-settings-form,
+  .holiday-settings-grid,
+  .holiday-settings-session-grid,
+  .holiday-settings-session,
+  .holiday-settings-penalty-head,
+  .holiday-settings-penalty-row {
     grid-template-columns: 1fr;
+  }
+
+  .holiday-settings-penalty-head {
+    display: none;
+  }
+
+  .holiday-settings-tab {
+    flex: 1 1 160px;
+    justify-content: center;
   }
 }

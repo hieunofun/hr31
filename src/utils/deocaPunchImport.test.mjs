@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { findDeocaPunchHeader, parseDeocaPunchSheet } from './deocaPunchImport.js'
+import { findDeocaPunchHeader, getDeocaShiftName, parseDeocaPunchSheet } from './deocaPunchImport.js'
 
 const headers = [
   'Tên riêng', 'Họ', 'ID', 'Bộ phận', 'Ngày',
@@ -65,4 +65,10 @@ test('uses earliest and latest valid distinct punches, preserving the raw cell',
     assert.equal(records[0].check_in, checkIn)
     assert.equal(records[0].check_out, checkOut)
   }
+})
+
+test('finds the shift only at the end of the DEOCA department path', () => {
+  assert.equal(getDeocaShiftName('Hầm 3 > Ca 1'), 'Ca 1')
+  assert.equal(getDeocaShiftName('Hầm 3/Ca 2'), 'Ca 2')
+  assert.equal(getDeocaShiftName('Hầm 3'), '')
 })

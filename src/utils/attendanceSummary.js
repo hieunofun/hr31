@@ -1,4 +1,5 @@
 import { buildSourceEmployeeKey } from './attendanceMatching.js'
+import { departmentForAttendanceSummary } from './attendanceDepartment.js'
 import {
   applyCalculatedAttendanceTiming,
   attendanceTimeToMinutes,
@@ -15,6 +16,37 @@ import {
 const numberValue = (value) => {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0
+}
+
+const attendancePunchPairs = log => {
+  if (Array.isArray(log?.punchPairs) && log.punchPairs.length) {
+    return log.punchPairs
+      .map(pair => ({
+        checkIn: formatAttendanceTime(pair?.checkIn),
+        checkOut: formatAttendanceTime(pair?.checkOut)
+      }))
+      .filter(pair => pair.checkIn || pair.checkOut)
+  }
+  // DEOCA ghi mọi lượt quẹt thẻ trong một ô, không đánh dấu cặp vào/ra.
+  // Chỉ dùng giờ đầu và cuối; các lượt ở giữa vẫn giữ trong punches để đối chiếu.
+  if (log?.importFormat === 'deoca-punch') {
+    const checkIn = formatAttendanceTime(log?.checkIn || log?.vao)
+    const checkOut = formatAttendanceTime(log?.checkOut || log?.ra)
+    return checkIn || checkOut ? [{ checkIn, checkOut }] : []
+  }
+  const punches = Array.isArray(log?.punches)
+    ? log.punches.map(formatAttendanceTime).filter(Boolean)
+    : []
+  if (punches.length < 4) {
+    const checkIn = formatAttendanceTime(log?.checkIn || log?.vao)
+    const checkOut = formatAttendanceTime(log?.checkOut || log?.ra)
+    return checkIn || checkOut ? [{ checkIn, checkOut }] : []
+  }
+  const pairs = []
+  for (let index = 0; index < punches.length; index += 2) {
+    pairs.push({ checkIn: punches[index] || '', checkOut: punches[index + 1] || '' })
+  }
+  return pairs
 }
 
 export const attendanceDateString = (log) => {
@@ -49,13 +81,18 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
   let checkIn = ''
   let checkOut = ''
   let shiftName = ''
+  let calculationMode = 'full-day'
+  let splitShiftBreakdown = []
   const sampleLog = logs[0] || {}
   const resolvedShift = resolveAttendanceShift(employee, sampleLog, attendanceSettings)
   const standardCheckIn = formatAttendanceTime(resolvedShift?.start || resolvedShift?.standardCheckIn)
   const standardCheckOut = formatAttendanceTime(resolvedShift?.end || resolvedShift?.standardCheckOut)
 
   logs.forEach(sourceLog => {
-    const log = applyCalculatedAttendanceTiming(sourceLog, employee, attendanceSettings)
+    const preservesSourceValues = ['source-value', 'matrix-value'].includes(sourceLog.calculationMode)
+    const log = preservesSourceValues
+      ? sourceLog
+      : applyCalculatedAttendanceTiming(sourceLog, employee, attendanceSettings)
     const logHours = numberValue(log.hours ?? log.soGio ?? log.gio ?? log.tongGio ?? (
       numberValue(log.hours ?? log.soGio ?? log.gio) +
       numberValue(log.gioPlus)
@@ -66,11 +103,13 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
     const hasCheckIn = Boolean(logCheckIn)
     const hasCheckOut = Boolean(logCheckOut)
     const isSyntheticPunch = Boolean(log.syntheticPunch || log.isDerivedFromCode)
+    const useSourceValues = ['source-value', 'matrix-value'].includes(log.calculationMode)
+    if (useSourceValues) calculationMode = log.calculationMode
     if (!isSyntheticPunch) {
       lateMinutes += numberValue(log.lateMinutes ?? log.vaoTre)
       earlyMinutes += numberValue(log.earlyMinutes ?? log.raSom)
     }
-    if (!isSyntheticPunch && hasCheckIn && hasCheckOut) {
+    if (!isSyntheticPunch && !useSourceValues && hasCheckIn && hasCheckOut) {
       actualPunches.push({ checkIn: logCheckIn, checkOut: logCheckOut })
     }
     if (!isSyntheticPunch && hasCheckIn && (!checkIn || logCheckIn < checkIn)) checkIn = logCheckIn
@@ -84,6 +123,11 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
       !hasCheckOut &&
       numberValue(log.congPlus) > 0 &&
       String(log.kyHieuPlus || status).trim().toUpperCase() === 'V'
+    const isMatrixPaidLeave =
+      !hasCheckIn &&
+      !hasCheckOut &&
+      ['P1', 'P'].includes(status) &&
+      numberValue(log.cong) > 0
     const workMode = String(
       log.workMode || log.workLocation || log.hinhThucLamViec || ''
     ).toLowerCase()
@@ -99,6 +143,8 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
       ['NP', 'VẮNG', 'VANG', 'NGHỈ KHÔNG PHÉP'].includes(status)
     if (isSourcePaidLeave) {
       paidLeaveWorkdays += numberValue(log.congPlus)
+    } else if (isMatrixPaidLeave) {
+      paidLeaveWorkdays += numberValue(log.cong)
     }
 
     if (workMode.includes('online') || workMode.includes('remote')) {
@@ -113,7 +159,7 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
 
     // Khi có Vào/Ra thật, Công phải được tính lại từ số phút; chỉ giữ cong
     // nguồn cho dòng mã công không có cặp punch.
-    if (hasNumericValue(log.cong) && (!hasCheckIn || !hasCheckOut || isSyntheticPunch)) {
+    if (hasNumericValue(log.cong) && (useSourceValues || !hasCheckIn || !hasCheckOut || isSyntheticPunch)) {
       workdays += numberValue(log.cong)
       hasSourceWorkday = true
     }
@@ -149,11 +195,15 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
       checkOut: lastPunch.checkOut,
       standardMinutes,
       breakMinutes,
-      autoCalculateOvertime
+      autoCalculateOvertime,
+      punchPairs: logs.flatMap(attendancePunchPairs),
+      splitShift: resolvedShift?.splitShift
     })
     hours = metrics.hours
     workdays = metrics.regularWorkdays
     overtimeHours = metrics.overtimeHours
+    calculationMode = metrics.calculationMode || 'full-day'
+    splitShiftBreakdown = metrics.splitShiftBreakdown || []
   } else if (!hasSourceWorkday) {
     const metrics = calculateAttendanceMetrics({
       log: logs[0] || {},
@@ -206,6 +256,8 @@ export const summarizeAttendanceDay = (logs, employee = {}, attendanceSettings =
     isHoliday: Boolean(holiday),
     holidayName: holiday?.name || '',
     holidayWorkdays: holiday ? roundDecimal(regularWorkdaysExact + extraWorkdaysExact) : 0,
+    calculationMode,
+    splitShiftBreakdown,
     logs
   }
 }
@@ -307,10 +359,7 @@ export const buildAttendanceSummary = ({
         log.sourceEmployeeName ||
         '',
       department:
-        employee?.bo_phan ||
-        employee?.department ||
-        log.department ||
-        '',
+        departmentForAttendanceSummary(log, employee),
       position:
         employee?.vi_tri ||
         employee?.position ||
@@ -350,6 +399,7 @@ export const buildAttendanceSummary = ({
         '',
       attendanceDays: 0,
       workdays: 0,
+      actualWorkdays: 0,
       totalHours: 0,
       overtimeHours: 0,
       lateCount: 0,
@@ -386,6 +436,13 @@ export const buildAttendanceSummary = ({
     const date = key.slice(separatorIndex + 2)
     const log = daySummary.logs[0] || {}
     const row = ensureSummaryRow(employeeId, log)
+    const matrixLog = daySummary.logs.find(item =>
+      item.monthlyDepartment ||
+      (item.importFormat === 'attendance-monthly-matrix' && item.sourceDepartment)
+    )
+    if (matrixLog) {
+      row.department = departmentForAttendanceSummary(matrixLog, employeesById.get(employeeId))
+    }
     row.days.set(date, daySummary)
   })
 
@@ -448,7 +505,9 @@ export const buildAttendanceSummary = ({
         date
       )
       const paidLeaveWorkdays = numberValue(
-        manualWorkdays[row.employeeId]?.[day] ?? 1
+        manualWorkdays[row.employeeId]?.[day] ??
+        manualWorkdays[row.employeeId]?.[String(day)] ??
+        1
       )
       row.days.set(date, {
         ...current,
@@ -459,6 +518,34 @@ export const buildAttendanceSummary = ({
         extraWorkdays: 0,
         extraWorkdaysExact: 0,
         paidLeaveWorkdays,
+        unapprovedAbsence: false
+      })
+    })
+
+    // Override công từng ngày do Kế toán/HR chỉnh tay (không chỉ ngày phép).
+    const overrides = manualWorkdays[row.employeeId] || manualWorkdays[String(row.employeeId)] || {}
+    Object.entries(overrides).forEach(([dayKey, rawValue]) => {
+      const day = Number(dayKey)
+      if (!Number.isFinite(day) || day < 1 || day > 31) return
+      const date = `${month}-${String(day).padStart(2, '0')}`
+      const current = row.days.get(date) || summarizeAttendanceDay(
+        [],
+        employee || {},
+        attendanceSettings,
+        date
+      )
+      const workdays = numberValue(rawValue)
+      const isPaidLeaveDay = permissionDays.includes(day)
+      row.days.set(date, {
+        ...current,
+        workdays,
+        workdaysExact: workdays,
+        regularWorkdays: workdays,
+        regularWorkdaysExact: workdays,
+        extraWorkdays: 0,
+        extraWorkdaysExact: 0,
+        paidLeaveWorkdays: isPaidLeaveDay ? workdays : 0,
+        manualOverride: true,
         unapprovedAbsence: false
       })
     })
@@ -478,6 +565,7 @@ export const buildAttendanceSummary = ({
       )
 
       row.workdays += day.workdaysExact ?? day.workdays
+      row.actualWorkdays += actualWorkdays
       row.totalHours += day.hoursExact ?? day.hours
       row.overtimeHours += day.overtimeHours
       row.attendanceDays += day.hasPunch || dayWorkdays > 0 ? 1 : 0
@@ -500,6 +588,7 @@ export const buildAttendanceSummary = ({
     })
 
     row.workdays = Math.round(row.workdays * 100) / 100
+    row.actualWorkdays = Math.round(row.actualWorkdays * 100) / 100
     row.totalHours = Math.round(row.totalHours * 100) / 100
     row.overtimeHours = Math.round(row.overtimeHours * 100) / 100
     row.probationWorkdays = Math.round(row.probationWorkdays * 100) / 100
@@ -524,9 +613,10 @@ const slimDayLogs = (logs = []) =>
     vao: log.vao || log.checkIn || '',
     ra: log.ra || log.checkOut || '',
     shiftName: log.shiftName || log.tenCa || '',
-    tenCa: log.tenCa || log.shiftName || ''
+    tenCa: log.tenCa || log.shiftName || '',
+    punches: Array.isArray(log.punches) ? log.punches : [],
+    punchPairs: Array.isArray(log.punchPairs) ? log.punchPairs : []
   }))
-
 /** Persist summary rows to hr_records (Map → plain object, slim logs). */
 export const serializeAttendanceSummaryRows = (rows = []) =>
   rows.map(row => ({
@@ -564,12 +654,14 @@ export const serializeAttendanceSummaryRows = (rows = []) =>
           isHoliday: Boolean(day.isHoliday),
           holidayName: day.holidayName || '',
           holidayWorkdays: day.holidayWorkdays || 0,
+          manualOverride: Boolean(day.manualOverride),
+          calculationMode: day.calculationMode || 'full-day',
+          splitShiftBreakdown: day.splitShiftBreakdown || [],
           logs: slimDayLogs(day.logs)
         }
       ])
     )
   }))
-
 /** Restore summary rows after loading from snapshot (plain object → Map). */
 export const hydrateAttendanceSummaryRows = (rows = []) =>
   (rows || []).map(row => ({

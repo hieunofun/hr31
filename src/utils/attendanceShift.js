@@ -39,16 +39,41 @@ const normalizeTime = value => {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
 }
 
+const normalizeSessionWorkdays = (value, fallback = 0.5) => {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(1, Math.max(0, parsed))
+}
+
+const normalizeSplitShift = value => {
+  const source = value && typeof value === 'object' ? value : {}
+  const morning = source.morning && typeof source.morning === 'object' ? source.morning : {}
+  const afternoon = source.afternoon && typeof source.afternoon === 'object' ? source.afternoon : {}
+  return {
+    enabled: source.enabled === true,
+    morning: {
+      start: normalizeTime(morning.start),
+      end: normalizeTime(morning.end),
+      workdays: normalizeSessionWorkdays(morning.workdays)
+    },
+    afternoon: {
+      start: normalizeTime(afternoon.start),
+      end: normalizeTime(afternoon.end),
+      workdays: normalizeSessionWorkdays(afternoon.workdays)
+    }
+  }
+}
+
 const normalizeConfiguredShift = (id, value, fallback) => {
   const source = value && typeof value === 'object' ? value : {}
   return {
     id,
-    name: String(source.name || fallback.name).trim() || fallback.name,
+    name: source.name === undefined ? fallback.name : String(source.name).trim(),
     standardCheckIn: normalizeTime(source.standardCheckIn || source.start) || fallback.start,
-    standardCheckOut: normalizeTime(source.standardCheckOut || source.end) || fallback.end
+    standardCheckOut: normalizeTime(source.standardCheckOut || source.end) || fallback.end,
+    splitShift: normalizeSplitShift(source.splitShift || source.splitSessions)
   }
 }
-
 export const normalizeAttendanceShiftSettings = (settings = {}) => {
   const source = settings && typeof settings === 'object' ? settings : {}
   const storedShifts = source.shifts && typeof source.shifts === 'object'
@@ -62,6 +87,17 @@ export const normalizeAttendanceShiftSettings = (settings = {}) => {
     standardCheckIn: source.standardCheckIn,
     standardCheckOut: source.standardCheckOut
   }
+  const additionalShifts = Object.fromEntries(
+    (Array.isArray(storedShifts)
+      ? storedShifts.filter(shift => shift?.id).map(shift => [shift.id, shift])
+      : Object.entries(storedShifts))
+      .filter(([id]) => !Object.values(ATTENDANCE_SHIFT_IDS).includes(id))
+      .map(([id, shift]) => [id, normalizeConfiguredShift(id, shift, {
+        name: String(shift?.name || id),
+        start: '',
+        end: ''
+      })])
+  )
 
   const configuredStandardMinutes = Number(
     source.standardWorkMinutes ?? source.standardMinutes ?? 480
@@ -108,7 +144,8 @@ export const normalizeAttendanceShiftSettings = (settings = {}) => {
         ATTENDANCE_SHIFT_IDS.SALE_MORNING,
         findStoredShift(ATTENDANCE_SHIFT_IDS.SALE_MORNING),
         SALE_ATTENDANCE_SHIFT
-      )
+      ),
+      ...additionalShifts
     }
   }
 }
@@ -138,7 +175,8 @@ const shiftFromConfiguration = (shift, settings) => {
     ? {
         name: configured.name,
         start: configured.standardCheckIn,
-        end: configured.standardCheckOut
+        end: configured.standardCheckOut,
+        ...(configured.splitShift?.enabled ? { splitShift: configured.splitShift } : {})
       }
     : null
 }
@@ -156,7 +194,8 @@ const configuredShiftFromName = (value, settings) => {
     return {
       name: exact.name,
       start: exact.standardCheckIn,
-      end: exact.standardCheckOut
+      end: exact.standardCheckOut,
+      ...(exact.splitShift?.enabled ? { splitShift: exact.splitShift } : {})
     }
   }
 
@@ -167,6 +206,20 @@ const configuredShiftFromName = (value, settings) => {
     return shiftFromConfiguration(ATTENDANCE_SHIFT_IDS.ADMINISTRATIVE, settings)
   }
   return null
+}
+
+const attachConfiguredSplitShift = (shift, sourceName, settings) => {
+  const namedShift = configuredShiftFromName(sourceName, settings)
+  const matchedShift = namedShift || Object.values(
+    normalizeAttendanceShiftSettings(settings).shifts
+  ).find(configured =>
+    configured.standardCheckIn === shift.start &&
+    configured.standardCheckOut === shift.end
+  )
+
+  return matchedShift?.splitShift?.enabled
+    ? { ...shift, splitShift: matchedShift.splitShift }
+    : shift
 }
 
 const rangeFromText = value => {
@@ -227,6 +280,12 @@ const employeeIsSale = (employee, log) => {
 }
 
 export const resolveAttendanceShift = (employee = {}, log = {}, settings = {}) => {
+  // File DEOCA chỉ rõ Ca 1/Ca 2 ở cột Bộ phận; ca trên từng dòng có ưu tiên
+  // hơn ca mặc định lưu trong hồ sơ nhân viên.
+  if (log.importFormat === 'deoca-punch' && log.shiftName) {
+    const sourceShift = configuredShiftFromName(log.shiftName, settings)
+    if (sourceShift) return sourceShift
+  }
   const employeeStart = normalizeTime(firstValue(
     employee.standardCheckIn,
     employee.shiftStart,
@@ -240,21 +299,23 @@ export const resolveAttendanceShift = (employee = {}, log = {}, settings = {}) =
     employee.gio_ra_ca
   ))
   if (employeeStart && employeeEnd) {
-    return {
-      name: firstValue(...employeeShiftFields(employee)) || 'Ca nhân viên',
+    const name = firstValue(...employeeShiftFields(employee)) || 'Ca nhân viên'
+    return attachConfiguredSplitShift({
+      name,
       start: employeeStart,
       end: employeeEnd
-    }
+    }, name, settings)
   }
 
   const employeeRange = employeeShiftFields(employee)
     .map(rangeFromText)
     .find(Boolean)
   if (employeeRange) {
-    return {
-      name: firstValue(...employeeShiftFields(employee)) || 'Ca nhân viên',
+    const name = firstValue(...employeeShiftFields(employee)) || 'Ca nhân viên'
+    return attachConfiguredSplitShift({
+      name,
       ...employeeRange
-    }
+    }, name, settings)
   }
 
   const logStart = normalizeTime(firstValue(
@@ -270,21 +331,23 @@ export const resolveAttendanceShift = (employee = {}, log = {}, settings = {}) =
     log.gio_ra_ca
   ))
   if (logStart && logEnd) {
-    return {
-      name: firstValue(log.shiftName, log.tenCa) || 'Ca chấm công',
+    const name = firstValue(log.shiftName, log.tenCa) || 'Ca chấm công'
+    return attachConfiguredSplitShift({
+      name,
       start: logStart,
       end: logEnd
-    }
+    }, name, settings)
   }
 
   const logRange = [log.shiftName, log.tenCa]
     .map(rangeFromText)
     .find(Boolean)
   if (logRange) {
-    return {
-      name: firstValue(log.shiftName, log.tenCa) || 'Ca chấm công',
+    const name = firstValue(log.shiftName, log.tenCa) || 'Ca chấm công'
+    return attachConfiguredSplitShift({
+      name,
       ...logRange
-    }
+    }, name, settings)
   }
 
   const employeeConfiguredShift = configuredShiftFromName(
@@ -370,16 +433,52 @@ export const calculateAttendanceTiming = ({
       ? checkOutMinutes + 24 * 60
       : checkOutMinutes
 
+  let effectiveStartMinutes = shiftStartMinutes
+  let effectiveEndMinutes = adjustedShiftEndMinutes
+  const splitShift = shift.splitShift
+  if (splitShift?.enabled && !overnightShift) {
+    const sessions = [splitShift.morning, splitShift.afternoon]
+      .map(session => ({
+        start: attendanceTimeToMinutes(session?.start),
+        end: attendanceTimeToMinutes(session?.end)
+      }))
+    if (sessions.every(session =>
+      session.start !== null && session.end !== null && session.start < session.end
+    )) {
+      if (checkInMinutes !== null && checkOutMinutes !== null) {
+        const attended = sessions.filter(session =>
+          checkInMinutes < session.end && checkOutMinutes > session.start
+        )
+        if (attended.length) {
+          effectiveStartMinutes = attended[0].start
+          effectiveEndMinutes = attended[attended.length - 1].end
+        } else {
+          // Chấm hoàn toàn trong khoảng nghỉ/ngoài ca không tạo phạt giả.
+          effectiveStartMinutes = checkInMinutes
+          effectiveEndMinutes = checkOutMinutes
+        }
+      } else if (checkInMinutes !== null) {
+        effectiveStartMinutes =
+          sessions.find(session => checkInMinutes < session.end)?.start ??
+          sessions[sessions.length - 1].start
+      } else if (checkOutMinutes !== null) {
+        effectiveEndMinutes =
+          [...sessions].reverse().find(session => checkOutMinutes > session.start)?.end ??
+          sessions[0].end
+      }
+    }
+  }
+
   return {
     shift,
     hasCheckIn: checkInMinutes !== null,
     hasCheckOut: checkOutMinutes !== null,
     lateMinutes: checkInMinutes === null
       ? null
-      : Math.max(0, checkInMinutes - shiftStartMinutes),
+      : Math.max(0, checkInMinutes - effectiveStartMinutes),
     earlyMinutes: adjustedCheckOutMinutes === null
       ? null
-      : Math.max(0, adjustedShiftEndMinutes - adjustedCheckOutMinutes)
+      : Math.max(0, effectiveEndMinutes - adjustedCheckOutMinutes)
   }
 }
 

@@ -16,6 +16,11 @@ import {
 } from '../utils/attendanceShift'
 import { getCompanyIdForUser, getCompanyNameForContext } from '../utils/companyContext'
 import { parseManualWorkdayInput, updateManualWorkdays } from '../utils/attendanceManual'
+import {
+  describeDayWorkFormula,
+  getAttendanceHoliday,
+  STANDARD_WORK_MINUTES
+} from '../utils/attendanceCalculations'
 import { canManageAttendance } from '../utils/staffAccess'
 import { openAttendancePrintWindow } from '../utils/attendancePdf'
 import './AttendancePreview.css'
@@ -262,16 +267,25 @@ function AttendancePreview() {
     const dowShort = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7']
     for (let d = 1; d <= daysInSelectedMonth; d++) {
       const date = new Date(y, m - 1, d)
+      const dayStr = String(d).padStart(2, '0')
+      const holiday = getAttendanceHoliday(`${month}-${dayStr}`, attendanceSettings)
       days.push({
         day: d,
-        dayStr: String(d).padStart(2, '0'),
+        dayStr,
         dow: dowShort[date.getDay()],
         isSunday: date.getDay() === 0,
-        isSaturday: date.getDay() === 6
+        isSaturday: date.getDay() === 6,
+        isHoliday: Boolean(holiday),
+        holidayName: holiday?.name || ''
       })
     }
     return days
-  }, [month, daysInSelectedMonth])
+  }, [attendanceSettings, month, daysInSelectedMonth])
+
+  const matrixHolidayLegend = useMemo(
+    () => monthDaysHeader.filter(day => day.isHoliday),
+    [monthDaysHeader]
+  )
 
   const matrixRows = useMemo(() => {
     if (!rows || rows.length === 0) return []
@@ -284,18 +298,37 @@ function AttendancePreview() {
       return code.includes(term) || name.includes(term) || dept.includes(term)
     })
 
+    const standardMinutes = Number(attendanceSettings?.standardWorkMinutes) || STANDARD_WORK_MINUTES
     return filtered.map(r => {
       const dailyMap = {}
       let calcTotal = 0
-      monthDaysHeader.forEach(({ dayStr }) => {
+      monthDaysHeader.forEach(({ day, dayStr, isHoliday, holidayName }) => {
         const dateKey = `${month}-${dayStr}`
-        const dayObj = r.days?.get ? r.days.get(dateKey) : null
+        const dayObj = r.days?.get ? r.days.get(dateKey) : (r.days?.[dateKey] || null)
+        const manualWorkday = manualWorkdays[String(r.employeeId)]?.[String(day)]
         let code = ''
         if (dayObj) {
           code = String(dayCode(dayObj) || (dayObj.workdays > 0 ? dayObj.workdays : '') || '')
-          if (!code && dayObj.isHoliday) code = 'Lễ'
+          if (!code && (dayObj.isHoliday || isHoliday)) code = 'Lễ'
+        } else if (isHoliday) code = 'Lễ'
+        if (manualWorkday !== undefined && manualWorkday !== null && manualWorkday !== '') {
+          code = String(manualWorkday)
         }
-        dailyMap[dayStr] = code
+        const formula = describeDayWorkFormula({
+          ...(dayObj || {}),
+          isHoliday: Boolean(dayObj?.isHoliday || isHoliday),
+          holidayName: dayObj?.holidayName || holidayName || '',
+          manualOverride: manualWorkday !== undefined && manualWorkday !== null && manualWorkday !== ''
+        }, { standardMinutes, displayCode: code })
+        dailyMap[dayStr] = {
+          code,
+          formula,
+          isHoliday: Boolean(dayObj?.isHoliday || isHoliday),
+          holidayName: dayObj?.holidayName || holidayName || '',
+          workdays: dayObj?.workdaysExact ?? dayObj?.workdays ?? '',
+          manualWorkday,
+          isManual: manualWorkday !== undefined && manualWorkday !== null && manualWorkday !== ''
+        }
         const num = parseFloat(code)
         if (!isNaN(num)) calcTotal += num
         else if (code === 'P1' || code === 'P') calcTotal += 1.0
@@ -309,7 +342,7 @@ function AttendancePreview() {
         totalCong: r.workdays != null ? Number(r.workdays).toFixed(2) : (calcTotal ? calcTotal.toFixed(2) : '0.00')
       }
     })
-  }, [rows, month, monthDaysHeader, excelSearch])
+  }, [rows, month, monthDaysHeader, excelSearch, attendanceSettings, manualWorkdays])
 
   const applySnapshot = useCallback((snapshot, nextMonth) => {
     if (!snapshot?.rows) {
@@ -435,8 +468,10 @@ function AttendancePreview() {
     await loadMonthSnapshot(nextMonth)
   }
 
-  const handleOpenExcelDetail = async () => {
-    const targetMonth = month || currentMonthValue()
+  const handleOpenExcelDetail = async (requestedMonth = '') => {
+    const targetMonth = typeof requestedMonth === 'string' && /^\d{4}-\d{2}$/.test(requestedMonth)
+      ? requestedMonth
+      : month || currentMonthValue()
     setIsExcelDetailOpen(true)
     setExcelLogsLoading(true)
     setExcelSearch('')
@@ -599,6 +634,8 @@ function AttendancePreview() {
   }, [excelPage, excelTotalPages])
 
   const handleOpenImport = async () => {
+    setImportEmployees([])
+    setImportLogs([])
     try {
       const [empData, logsData, storedSettings] = await Promise.all([
         fbGetEmployeesDirectory(companyId),
@@ -624,11 +661,13 @@ function AttendancePreview() {
       }
     } catch (err) {
       console.warn('Không thể nạp trước dữ liệu nhân sự để import:', err)
+      alert('Không tải được danh mục nhân viên hoặc cài đặt. Vui lòng thử mở Import lại; chưa có dữ liệu nào được ghi.')
+      return
     }
     setIsImportOpen(true)
   }
 
-  const saveMonthSummary = useCallback(async (targetMonth, { silent = false } = {}) => {
+  const saveMonthSummary = useCallback(async (targetMonth, { silent = false, apply = true } = {}) => {
     if (!/^\d{4}-\d{2}$/.test(targetMonth)) {
       throw new Error('Tháng không hợp lệ. Dùng định dạng YYYY-MM.')
     }
@@ -641,8 +680,10 @@ function AttendancePreview() {
       fbGet('hr/attendanceSettings/default', companyId)
     ])
     const nextAttendanceSettings = normalizeAttendanceShiftSettings(storedSettings)
-    setAttendanceSettings(nextAttendanceSettings)
-    setManualWorkdays(nextManuals || {})
+    if (apply) {
+      setAttendanceSettings(nextAttendanceSettings)
+      setManualWorkdays(nextManuals || {})
+    }
     const employeeList = employeeData
       ? Object.entries(employeeData).map(([id, value]) => ({ ...value, id }))
       : []
@@ -669,7 +710,7 @@ function AttendancePreview() {
       rows: serializeAttendanceSummaryRows(filteredSummaryRows)
     }
     await fbSet(`hr/attendanceMonthSummaries/${targetMonth}`, snapshot, companyId)
-    applySnapshot(snapshot, targetMonth)
+    if (apply) applySnapshot(snapshot, targetMonth)
     setSummaryMonths(prev => {
       const next = new Set(prev)
       next.add(targetMonth)
@@ -726,22 +767,34 @@ function AttendancePreview() {
     }
   }
 
-  const handleImportComplete = async (importedMonth = '') => {
+  const handleImportComplete = async (result = '') => {
     setIsImportOpen(false)
-    const targetMonth = importedMonth || month || currentMonthValue()
+    const primaryMonth = typeof result === 'string' ? result : result?.primaryMonth
+    const targetMonth = primaryMonth || month || currentMonthValue()
+    const affectedMonths = [...new Set([
+      ...(Array.isArray(result?.affectedMonths) ? result.affectedMonths : []),
+      targetMonth
+    ])].filter(value => /^\d{4}-\d{2}$/.test(value))
     setSummarizing(true)
     setError('')
     try {
-      await saveMonthSummary(targetMonth, { silent: true })
+      for (const affectedMonth of affectedMonths) {
+        await saveMonthSummary(affectedMonth, {
+          silent: true,
+          apply: affectedMonth === targetMonth
+        })
+      }
       await loadSummaryIndex()
       if (isExcelDetailOpen) {
-        await handleOpenExcelDetail()
+        await handleOpenExcelDetail(targetMonth)
       }
-      alert(`Đã đồng bộ Excel và lưu bảng công tháng ${targetMonth}.`)
+      alert(`Đã đồng bộ Excel và lưu bảng công tháng ${affectedMonths.join(', ')}.`)
+      return { summaryStatus: 'complete', affectedMonths }
     } catch (requestError) {
       console.error('Lưu bảng công sau import thất bại:', requestError)
       alert('Import xong nhưng chưa lưu được bảng công: ' + (requestError.message || requestError))
       await loadMonthSnapshot(targetMonth)
+      return { summaryStatus: 'failed', error: requestError.message || String(requestError), affectedMonths }
     } finally {
       setSummarizing(false)
     }
@@ -1270,6 +1323,23 @@ function AttendancePreview() {
 
           {detailViewMode === 'matrix' ? (
             <div className="attendance-excel-detail-scroll attendance-matrix-scroll">
+              {canEditWorkdays && (
+                <div className="manual-workday-help matrix-edit-help">
+                  <strong>Chỉnh công trên ma trận:</strong> bấm vào ô ngày, nhập 0–1 rồi rời ô để lưu. Xóa giá trị để dùng lại công thức tự động.
+                  {manualNotice && <span>{manualNotice}</span>}
+                </div>
+              )}
+              {matrixHolidayLegend.length > 0 && (
+                <div className="matrix-holiday-legend">
+                  <strong>Ngày lễ tháng này:</strong>
+                  {matrixHolidayLegend.map(day => (
+                    <span key={day.dayStr}>
+                      {day.dayStr}/{String(month).slice(5)}
+                      {day.holidayName ? ` · ${day.holidayName}` : ''}
+                    </span>
+                  ))}
+                </div>
+              )}
               <table className="attendance-matrix-table">
                 <thead>
                   <tr className="matrix-group-row">
@@ -1287,10 +1357,11 @@ function AttendancePreview() {
                     {monthDaysHeader.map(d => (
                       <th
                         key={d.dayStr}
-                        className={`day-col ${d.isSunday ? 'is-sunday' : ''} ${d.isSaturday ? 'is-saturday' : ''}`}
+                        className={`day-col ${d.isSunday ? 'is-sunday' : ''} ${d.isSaturday ? 'is-saturday' : ''} ${d.isHoliday ? 'is-holiday' : ''}`}
+                        title={d.isHoliday ? (d.holidayName ? `Ngày lễ: ${d.holidayName}` : 'Ngày lễ') : undefined}
                       >
                         <div className="day-number">{d.dayStr}</div>
-                        <div className="day-dow">{d.dow}</div>
+                        <div className="day-dow">{d.isHoliday ? 'Lễ' : d.dow}</div>
                       </th>
                     ))}
                   </tr>
@@ -1311,16 +1382,31 @@ function AttendancePreview() {
                         <td className="col-company">{companyName}</td>
                         <td className="col-pos">{emp.position || '-'}</td>
                         {monthDaysHeader.map(d => {
-                          const val = emp.dailyMap[d.dayStr] || ''
-                          const isOff = val === '0' || d.isSunday
-                          const isHoliday = val === 'Lễ'
+                          const cell = emp.dailyMap[d.dayStr] || {}
+                          const val = cell.code || ''
+                          const isOff = val === '0' || (d.isSunday && !val)
+                          const isHoliday = Boolean(cell.isHoliday || d.isHoliday)
                           return (
                             <td
                               key={d.dayStr}
-                              className={`matrix-cell ${isOff ? 'is-off' : ''} ${val === '1' ? 'is-work' : ''} ${isHoliday ? 'is-holiday' : ''}`}
-                              title={isHoliday ? 'Ngày lễ cấu hình — không tự tính công' : undefined}
+                              className={`matrix-cell ${isOff ? 'is-off' : ''} ${val === '1' ? 'is-work' : ''} ${isHoliday ? 'is-holiday' : ''} ${cell.isManual ? 'is-manual' : ''} ${canEditWorkdays ? 'is-editable' : ''}`}
+                              title={cell.formula || (isHoliday ? (cell.holidayName || d.holidayName || 'Ngày lễ') : undefined)}
                             >
-                              {val}
+                              {canEditWorkdays ? (
+                                <ManualWorkdayInput
+                                  value={cell.isManual ? cell.manualWorkday : (cell.workdays !== '' ? cell.workdays : val)}
+                                  isManual={cell.isManual}
+                                  disabled={manualSavingKey === `${String(emp.employeeId)}:${d.day}`}
+                                  employeeName={emp.name}
+                                  date={`${month}-${d.dayStr}`}
+                                  onSave={value => handleSaveManualWorkday(emp.employeeId, d.day, value)}
+                                />
+                              ) : (
+                                <>
+                                  <span className="matrix-cell-value">{val}</span>
+                                  {cell.formula && <span className="matrix-cell-formula">{cell.formula}</span>}
+                                </>
+                              )}
                             </td>
                           )
                         })}
@@ -1330,6 +1416,12 @@ function AttendancePreview() {
                   )}
                 </tbody>
               </table>
+              <div className="matrix-formula-legend">
+                <strong>Công thức công ngày:</strong>
+                <span>Có Vào/Ra → phút(Vào→Ra) ÷ {Number(attendanceSettings?.standardWorkMinutes) || STANDARD_WORK_MINUTES} (tối đa 1 công)</span>
+                <span>P1 = phép 1 công</span>
+                <span>Di chuột lên ô để xem cách tính chi tiết</span>
+              </div>
             </div>
           ) : (
             <>

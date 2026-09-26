@@ -112,7 +112,100 @@ test('keeps actual punch strings while replacing incorrect source penalties', ()
   assert.equal(log.earlyMinutes, 0)
 })
 
+test('preserves company shifts and uses the shift declared by each DEOCA row', () => {
+  const settings = normalizeAttendanceShiftSettings({
+    shifts: {
+      custom_ca_1: { name: 'Ca 1', standardCheckIn: '06:00', standardCheckOut: '14:00' },
+      custom_ca_2: { name: 'Ca 2', standardCheckIn: '14:00', standardCheckOut: '22:00' }
+    }
+  })
+  const payload = buildAttendanceShiftSettingsPayload(settings)
+  assert.equal(payload.shifts.custom_ca_1.name, 'Ca 1')
+  assert.equal(payload.shifts.custom_ca_2.standardCheckOut, '22:00')
+  const timing = calculateAttendanceTiming({
+    employee: { shift: 'Ca ngày', position: 'HR' },
+    log: { importFormat: 'deoca-punch', shiftName: 'Ca 2' },
+    checkIn: '14:13',
+    checkOut: '21:48',
+    attendanceSettings: settings
+  })
+  assert.equal(timing.shift.name, 'Ca 2')
+  assert.equal(timing.lateMinutes, 13)
+  assert.equal(timing.earlyMinutes, 12)
+})
+
+test('split shift timing does not mark a morning-only checkout or afternoon-only checkin as missing a half-day', () => {
+  const settings = normalizeAttendanceShiftSettings({
+    shifts: {
+      administrative: {
+        name: 'Ca Hành chính',
+        standardCheckIn: '08:30',
+        standardCheckOut: '17:30',
+        splitShift: {
+          enabled: true,
+          morning: { start: '08:30', end: '12:00', workdays: 0.5 },
+          afternoon: { start: '13:00', end: '17:30', workdays: 0.5 }
+        }
+      }
+    }
+  })
+  const employee = { shift: 'Ca Hành chính', position: 'HR' }
+  const morning = calculateAttendanceTiming({
+    employee, checkIn: '08:24', checkOut: '12:33', attendanceSettings: settings
+  })
+  assert.equal(morning.lateMinutes, 0)
+  assert.equal(morning.earlyMinutes, 0)
+
+  const afternoon = calculateAttendanceTiming({
+    employee, checkIn: '12:30', checkOut: '17:33', attendanceSettings: settings
+  })
+  assert.equal(afternoon.lateMinutes, 0)
+  assert.equal(afternoon.earlyMinutes, 0)
+
+  const late = calculateAttendanceTiming({
+    employee, checkIn: '09:00', checkOut: '17:30', attendanceSettings: settings
+  })
+  assert.equal(late.lateMinutes, 30)
+  assert.equal(late.earlyMinutes, 0)
+})
+
 test('formats stored timestamps in the attendance timezone', () => {
   assert.equal(formatAttendanceTime('2026-08-05T21:02:00.000Z'), '04:02')
   assert.equal(formatAttendanceTime('8:30 PM'), '20:30')
+})
+
+test('lưu cấu hình chia hai buổi độc lập cho từng ca', () => {
+  const settings = normalizeAttendanceShiftSettings({
+    shifts: {
+      administrative: {
+        splitShift: {
+          enabled: true,
+          morning: { start: '08:30', end: '12:00', workdays: 0.5 },
+          afternoon: { start: '13:00', end: '17:30', workdays: 0.5 }
+        }
+      },
+      saleMorning: {
+        splitShift: {
+          enabled: true,
+          morning: { start: '04:00', end: '08:00', workdays: 0.5 },
+          afternoon: { start: '09:00', end: '13:30', workdays: 0.5 }
+        }
+      }
+    }
+  })
+  const payload = buildAttendanceShiftSettingsPayload(settings)
+
+  assert.equal(payload.shifts.administrative.splitShift.morning.end, '12:00')
+  assert.equal(payload.shifts.saleMorning.splitShift.afternoon.start, '09:00')
+  assert.equal(
+    resolveAttendanceShift({ shift: 'Ca Sáng Sale', position: 'Sale' }, {}, settings).splitShift.enabled,
+    true
+  )
+
+  const explicitEmployeeShift = resolveAttendanceShift({
+    shift: 'Ca Hành chính',
+    standardCheckIn: '08:30',
+    standardCheckOut: '17:30'
+  }, {}, settings)
+  assert.equal(explicitEmployeeShift.splitShift.morning.end, '12:00')
 })

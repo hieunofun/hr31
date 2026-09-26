@@ -17,6 +17,13 @@ const normalizeHeader = value => String(value ?? '')
   .replace(/\s+/g, ' ')
   .trim()
 
+export const getDeocaShiftName = departmentLocation => {
+  const segments = String(departmentLocation || '').split(/[>/]/).map(segment => segment.trim())
+  const last = segments[segments.length - 1] || ''
+  const match = last.match(/^Ca\s*(\d+)$/i)
+  return match ? `Ca ${match[1]}` : ''
+}
+
 export const findDeocaPunchHeader = (rows = []) => {
   for (let rowIndex = 0; rowIndex < Math.min(rows.length, 30); rowIndex++) {
     const headers = new Map((rows[rowIndex] || []).map((cell, index) => [normalizeHeader(cell), index]))

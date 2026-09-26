@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import XLSX from 'xlsx-js-style'
-import { fbPush, fbUpdate } from '../services/firebase'
+import { fbGet, fbUpdate } from '../services/firebase'
 import { supabase } from '../services/supabase'
+import { commitHr31AttendanceImport } from '../services/hr31AttendanceImport'
 import { useAuth } from '../contexts/AuthContext'
 import {
   applyEmployeeToAttendanceLog,
-  buildAttendanceRecordKey,
   buildSourceEmployeeKey,
   getCanonicalEmployeeCode,
   matchAttendanceEmployee,
@@ -17,11 +17,12 @@ import {
   parseAttendanceDate,
   parseAttendanceTime
 } from '../utils/attendanceImport'
-import { findDeocaPunchHeader, parseDeocaPunchSheet } from '../utils/deocaPunchImport'
+import { findDeocaPunchHeader, getDeocaShiftName, parseDeocaPunchSheet } from '../utils/deocaPunchImport'
 import {
   applyCalculatedAttendanceTiming,
   calculateAttendanceTiming,
   formatAttendanceTime,
+  getAttendanceShiftOptions,
   resolveAttendanceShift
 } from '../utils/attendanceShift'
 import {
@@ -47,6 +48,7 @@ function AttendanceImportModal({
   const [file, setFile] = useState(null)
   const [referenceImage, setReferenceImage] = useState(null)
   const [loading, setLoading] = useState(false)
+  const importInProgressRef = useRef(false)
   const [aiLoading, setAiLoading] = useState(false)
   const [aiAvailable, setAiAvailable] = useState(null)
   const [previewData, setPreviewData] = useState(null)
@@ -122,7 +124,6 @@ function AttendanceImportModal({
     // không được sort theo đồng hồ vì sẽ đảo ngược ca.
     const checkInStr = parsed[0].str
     const checkOutStr = parsed.length > 1 ? parsed[parsed.length - 1].str : null
-    const inTime = parsed[0]
     const outTime = parsed.length > 1 ? parsed[parsed.length - 1] : null
 
     if (!outTime || parsed.length === 1) {
@@ -138,10 +139,6 @@ function AttendanceImportModal({
     }
 
     const shift = resolveAttendanceShift(employee, log, attendanceSettings)
-    const [startHour, startMinute] = shift.start.split(':').map(Number)
-    const [endHour, endMinute] = shift.end.split(':').map(Number)
-    const STANDARD_START = startHour * 60 + startMinute
-    const STANDARD_END = endHour * 60 + endMinute
     const metrics = calculateAttendanceMetrics({
       checkIn: checkInStr,
       checkOut: checkOutStr,
@@ -149,21 +146,27 @@ function AttendanceImportModal({
       // Import Excel không tự trừ lunch cứng; nếu doanh nghiệp muốn trừ
       // khoảng nghỉ thì khai báo rõ trong Cài đặt chấm công.
       breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
-      autoCalculateOvertime: false
+      autoCalculateOvertime: false,
+      splitShift: shift?.splitShift
     })
     const hours = metrics.hours
 
-    const isLate = inTime.h * 60 + inTime.m > STANDARD_START
-    const isEarly = outTime.h * 60 + outTime.m < STANDARD_END
-    let lateMinutes = isLate ? Math.max(0, inTime.h * 60 + inTime.m - STANDARD_START) : 0
-    let earlyMinutes = isEarly ? Math.max(0, STANDARD_END - (outTime.h * 60 + outTime.m)) : 0
+    const timing = calculateAttendanceTiming({
+      employee,
+      log,
+      checkIn: checkInStr,
+      checkOut: checkOutStr,
+      attendanceSettings
+    })
+    const lateMinutes = timing.lateMinutes ?? 0
+    const earlyMinutes = timing.earlyMinutes ?? 0
 
     let status = 'Đủ'
     const notes = []
-    if (isLate) notes.push(`Muộn ${lateMinutes}p`)
-    if (isEarly) notes.push(`Sớm ${earlyMinutes}p`)
+    if (lateMinutes > 0) notes.push(`Muộn ${lateMinutes}p`)
+    if (earlyMinutes > 0) notes.push(`Sớm ${earlyMinutes}p`)
     if (notes.length > 0) status = notes.join(' & ')
-    if (hours < 4) status = 'Vắng/Nghỉ'
+    if (hours <= 0) status = 'Vắng/Nghỉ'
 
     return {
       checkIn: checkInStr,
@@ -227,6 +230,8 @@ function AttendanceImportModal({
     }
 
     const hasActualPunchPair = Boolean(checkInStr && checkOutStr && !extra.syntheticPunch)
+    const resolvedShift = resolveAttendanceShift(sysEmp, extra, attendanceSettings)
+    const punchPairs = stats.punchPairs || extra.punchPairs || []
     const metrics = calculateAttendanceMetrics({
       log: extra,
       checkIn: checkInStr,
@@ -234,6 +239,8 @@ function AttendanceImportModal({
       standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
       breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
       autoCalculateOvertime: false,
+      punchPairs,
+      splitShift: resolvedShift?.splitShift,
       fallbackHours: Number(extra.hours ?? stats.hours ?? 0) || 0,
       fallbackWorkdays: extra.cong ?? stats.regularWorkdays
     })
@@ -325,7 +332,9 @@ function AttendanceImportModal({
       overtimeMinutes: metrics.overtimeMinutes,
       overtimeAutoDisabled: true,
       syntheticPunch: Boolean(extra.syntheticPunch),
-      punches: stats.punches || []
+      punches: stats.punches || [],
+      punchPairs,
+      importFormat: extra.importFormat || ''
     }
   }
 
@@ -450,6 +459,7 @@ function AttendanceImportModal({
       }
 
       const employeeName = `${record.first_name} ${record.last_name}`.replace(/\s+/g, ' ').trim()
+      const shiftName = getDeocaShiftName(record.department_location)
       const sysEmp = attachSourceIdentity(
         findEmployee(record.employee_code, employeeName) ||
           buildFallbackEmployee(record.employee_code, employeeName, record.source_row - 1),
@@ -459,16 +469,22 @@ function AttendanceImportModal({
       const stats = calculateStats(
         record.check_out ? [record.check_in, record.check_out] : [record.check_in],
         sysEmp,
-        { department: record.department_location }
+        { department: record.department_location, shiftName }
       )
       if (!stats) return
 
       logs.push({
-        ...buildLog(sysEmp, record.attendance_date, { ...stats, punches: record.punches }, {
+        ...buildLog(sysEmp, record.attendance_date, {
+          ...stats,
+          punches: record.punches,
+          punchPairs: [{ checkIn: record.check_in, checkOut: record.check_out }]
+        }, {
           employeeCode: record.employee_code,
           employeeName,
           machineName: employeeName,
           department: record.department_location,
+          shiftName,
+          importFormat: 'deoca-punch',
           dayOfWeek: record.weekday,
           vao: record.check_in,
           ra: record.check_out
@@ -1383,182 +1399,85 @@ function AttendanceImportModal({
   }
 
   const executeImport = async () => {
-    if (!previewData || !previewData.logs) return
-    const unresolvedCount = previewData.matchGroups.filter(
-      group => !group.selectedEmployeeId && group.status !== 'skipped'
+    if (!previewData?.logs || importInProgressRef.current) return
+    const unresolvedCount = previewData.matchGroups.filter(group =>
+      !group.selectedEmployeeId && group.status !== 'skipped'
     ).length
-    if (
-      unresolvedCount > 0 &&
-      !confirm(
-        `Còn ${unresolvedCount} nhân viên chưa được ghép với hồ sơ Lumi.\n` +
-        'Các dòng này sẽ được lưu theo mã và tên trong file chấm công để không mất dữ liệu. Bạn có muốn tiếp tục?'
-      )
-    ) {
+    if (unresolvedCount > 0) {
+      alert(`Còn ${unresolvedCount} nhân viên chưa được ghép hồ sơ HR31. Hãy ghép hoặc bỏ qua trước khi nhập.`)
       return
     }
 
+    const skippedSourceKeys = new Set(previewData.matchGroups
+      .filter(group => group.status === 'skipped')
+      .map(group => group.key))
+    const configuredShiftNames = new Set(getAttendanceShiftOptions(attendanceSettings)
+      .map(shift => String(shift.name || '').trim().toLocaleLowerCase('vi')))
+    const missingShifts = [...new Set(previewData.logs
+      .filter(log => log.importFormat === 'deoca-punch' && !skippedSourceKeys.has(log._sourceEmployeeKey))
+      .map(log => String(log.shiftName || '').trim())
+      .filter(name => name && !configuredShiftNames.has(name.toLocaleLowerCase('vi'))))]
+    if (missingShifts.length) {
+      alert(`Chưa có giờ chuẩn cho ${missingShifts.join(', ')}. Hãy thêm ca cùng tên trong Cài đặt → Cài đặt ca trước khi nhập để tính đúng đi muộn/về sớm.`)
+      return
+    }
+
+    importInProgressRef.current = true
     setLoading(true)
     try {
-      const BATCH_SIZE = 50
-      let count = 0
-      let skippedCount = 0
-      const sanitizeLog = (log) =>
-        Object.fromEntries(
-          Object.entries(log).filter(([key]) => key !== 'id' && !key.startsWith('_'))
-        )
-
-      if (previewData.isReconcileMode) {
-        const changedLogs = previewData.logs.filter(
-          log =>
-            log.id &&
-            String(log.employeeId || '') !== String(log._originalEmployeeId || '')
-        )
-
-        for (let i = 0; i < changedLogs.length; i += BATCH_SIZE) {
-          const chunk = changedLogs.slice(i, i + BATCH_SIZE)
-          await Promise.all(
-            chunk.map(log =>
-              fbUpdate(`hr/attendanceLogs/${log.id}`, sanitizeLog(log), activeCompanyId)
-            )
-          )
-          count += chunk.length
-        }
-      } else {
-        const existingMap = new Map()
-        attendanceLogs.forEach(log => {
-          const key = buildAttendanceRecordKey(log)
-          existingMap.set(key, log)
+      const preparedLogs = previewData.logs.map(log => {
+        if (skippedSourceKeys.has(log._sourceEmployeeKey)) return log
+        const employee = employeesById.get(String(log.employeeId))
+        if (!employee || log.syntheticPunch || ['source-value', 'matrix-value'].includes(log.calculationMode)) return log
+        const shift = resolveAttendanceShift(employee, log, attendanceSettings)
+        const metrics = calculateAttendanceMetrics({
+          log,
+          checkIn: log.vao || log.checkIn,
+          checkOut: log.ra || log.checkOut,
+          punchPairs: log.punchPairs,
+          splitShift: shift?.splitShift,
+          standardMinutes: Number(attendanceSettings.standardWorkMinutes) || STANDARD_WORK_MINUTES,
+          breakMinutes: Number(attendanceSettings.unpaidBreakMinutes) || 0,
+          autoCalculateOvertime: false,
+          fallbackHours: log.hours,
+          fallbackWorkdays: log.cong
         })
-
-        const importKeys = new Set()
-        const skippedSourceKeys = new Set(
-          previewData.matchGroups
-            .filter(group => group.status === 'skipped')
-            .map(group => group.key)
-        )
-
-        const logsToInsert = []
-        const logsToUpdate = []
-
-        previewData.logs.forEach(log => {
-          if (skippedSourceKeys.has(log._sourceEmployeeKey)) {
-            skippedCount += 1
-            return
-          }
-          const key = buildAttendanceRecordKey(log)
-          if (importKeys.has(key)) {
-            skippedCount += 1
-            return
-          }
-          importKeys.add(key)
-
-          const existing = existingMap.get(key)
-          if (existing && existing.id) {
-            const nextData = sanitizeLog(log)
-            const hasChanged = Object.entries(nextData).some(([field, value]) =>
-              JSON.stringify(existing[field] ?? null) !== JSON.stringify(value ?? null)
-            )
-            if (hasChanged) {
-              logsToUpdate.push({ id: existing.id, data: nextData })
-            } else {
-              skippedCount += 1
-            }
-          } else {
-            logsToInsert.push(log)
-          }
-        })
-
-        for (let i = 0; i < logsToUpdate.length; i += BATCH_SIZE) {
-          const chunk = logsToUpdate.slice(i, i + BATCH_SIZE)
-          await Promise.all(
-            chunk.map(item => fbUpdate(`hr/attendanceLogs/${item.id}`, item.data, activeCompanyId))
-          )
-        }
-
-        for (let i = 0; i < logsToInsert.length; i += BATCH_SIZE) {
-          const chunk = logsToInsert.slice(i, i + BATCH_SIZE)
-          await Promise.all(
-            chunk.map(log => fbPush('hr/attendanceLogs', sanitizeLog(log), activeCompanyId))
-          )
-          count += chunk.length
-        }
-
-        // Lưu trực tiếp vào bảng cham_cong của Supabase và cập nhật nhan_su
-        try {
-          const validLogs = previewData.logs.filter(
-            log => !skippedSourceKeys.has(log._sourceEmployeeKey) && log.employeeId && !String(log.employeeId).startsWith('external:')
-          )
-
-          if (validLogs.length > 0) {
-            // Cập nhật chức vụ từ Excel vào nhan_su nếu có
-            const updatedPositions = new Map()
-            validLogs.forEach(log => {
-              if (log.position && log.employeeId) {
-                updatedPositions.set(log.employeeId, log.position)
-              }
-            })
-            for (const [empId, pos] of updatedPositions.entries()) {
-              await supabase
-                .from('nhan_su')
-                .update({ chuc_vu: pos })
-                .eq('company_id', activeCompanyId)
-                .eq('id', empId)
-            }
-
-            // Ghi vào bảng cham_cong với đúng nhan_su_id
-            const chamCongRows = validLogs.map(log => {
-              const rawGiaTri = String(log.rawVal ?? log.kyHieu ?? log.hours ?? log.cong ?? '')
-              const congVal = Number(log.cong ?? 0)
-              return {
-                company_id: activeCompanyId,
-                nhan_su_id: log.employeeId,
-                ngay: String(log.date || '').slice(0, 10),
-                gia_tri_goc: rawGiaTri || null,
-                // cham_cong.gio_vao/gio_ra là TIME; không ghi ISO timestamp
-                // (sẽ bị PostgreSQL từ chối và làm mất cả lượt import).
-                gio_vao: log.vao || formatAttendanceTime(log.checkIn) || null,
-                gio_ra: log.ra || formatAttendanceTime(log.checkOut) || null,
-                ca_lam: log.shiftName || 'Ca ngày',
-                tang_ca: Number(log.tc1 || 0) + Number(log.tc2 || 0) + Number(log.tc3 || 0),
-                phep_su_dung: 0,
-                cong_lam_le: 0,
-                cong_le: 0,
-                tong_cong: isNaN(congVal) ? 0 : congVal,
-                notes: log.notes || null,
-                xac_nhan: false
-              }
-            })
-
-            for (let i = 0; i < chamCongRows.length; i += BATCH_SIZE) {
-              const chunk = chamCongRows.slice(i, i + BATCH_SIZE)
-              await supabase
-                .from('cham_cong')
-                .upsert(chunk, { onConflict: 'company_id,nhan_su_id,ngay' })
-            }
-          }
-        } catch (dbErr) {
-          console.error('Lỗi khi lưu vào bảng cham_cong:', dbErr)
-        }
-
-        const updateMsg = logsToUpdate.length ? ` Cập nhật lại ${logsToUpdate.length} dòng theo nhân sự mới chọn.` : ''
-        alert(
-          `Đã import ${count} dòng mới.${updateMsg}` +
-          `${unresolvedCount ? ` ${unresolvedCount} nhân viên được giữ theo mã/tên nguồn để đối soát sau.` : ''}` +
-          `${skippedCount ? ` Bỏ qua ${skippedCount} dòng đã có.` : ''}`
-        )
-      }
-      await onSave(previewData.importMonth || importMonth)
+        const timed = applyCalculatedAttendanceTiming(log, employee, attendanceSettings)
+        return metrics.hasPunchPair ? {
+          ...timed,
+          cong: metrics.regularWorkdays,
+          hours: metrics.hours,
+          gio: metrics.hours,
+          tongGio: metrics.hours + (Number(log.gioPlus) || 0),
+          workedMinutes: metrics.workedMinutes,
+          regularMinutes: metrics.regularMinutes,
+          calculationMode: metrics.calculationMode,
+          splitShiftBreakdown: metrics.splitShiftBreakdown
+        } : timed
+      })
+      const result = await commitHr31AttendanceImport({
+        supabase,
+        fbGet,
+        fbUpdate,
+        companyId: activeCompanyId,
+        incomingLogs: preparedLogs,
+        skippedSourceKeys,
+        reconcileMode: Boolean(previewData.isReconcileMode)
+      })
+      const primaryMonth = previewData.importMonth || importMonth
+      const affectedMonths = [...new Set([...result.affectedMonths, primaryMonth])]
+      await onSave({ primaryMonth, affectedMonths })
       onClose()
       setFile(null)
       setReferenceImage(null)
       setPreviewData(null)
     } catch (error) {
-      alert('Lỗi khi lưu dữ liệu: ' + error.message)
+      alert('Lỗi khi lưu dữ liệu: ' + (error.message || String(error)))
     } finally {
+      importInProgressRef.current = false
       setLoading(false)
     }
   }
-
   const formatExportTime = value => formatAttendanceTime(value) || String(value || '')
 
   const downloadMatchedExcel = () => {
@@ -1985,10 +1904,10 @@ function AttendanceImportModal({
                   type="button"
                   className="btn btn-success"
                   onClick={executeImport}
-                  disabled={loading}
+                  disabled={loading || unresolvedEmployeeCount > 0}
                   title={
                     unresolvedEmployeeCount > 0
-                      ? 'Nhân viên chưa ghép sẽ được giữ theo mã/tên nguồn để đối soát sau'
+                      ? 'Hãy ghép hoặc bỏ qua mọi nhân viên trước khi lưu vào HR31'
                       : ''
                   }
                 >

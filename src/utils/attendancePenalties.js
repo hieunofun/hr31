@@ -1,26 +1,76 @@
-export const PENALTY_CATEGORIES = [
-  { label: 'Muộn/sớm <30p', amount: 50000 },
-  { label: 'Muộn/sớm ≥30p', amount: 100000 },
-  { label: 'Quên chấm', amount: 50000 },
-  { label: 'Không trực nhật', amount: 50000 },
-  { label: 'Nghỉ đột xuất', amount: 100000 },
-  { label: 'Nghỉ không phép', amount: 200000 },
-  { label: 'Say xỉn', amount: 200000 },
-  { label: 'Khác', amount: 0 }
+export const DEFAULT_PENALTY_CATEGORIES = [
+  { key: 'late_under_30', label: 'Muộn/sớm <30p', amount: 50000 },
+  { key: 'late_over_30', label: 'Muộn/sớm ≥30p', amount: 100000 },
+  { key: 'missing_punch', label: 'Quên chấm', amount: 50000 },
+  { key: 'no_duty', label: 'Không trực nhật', amount: 50000 },
+  { key: 'emergency_leave', label: 'Nghỉ đột xuất', amount: 100000 },
+  { key: 'unapproved_absence', label: 'Nghỉ không phép', amount: 200000 },
+  { key: 'drunk', label: 'Say xỉn', amount: 200000 },
+  { key: 'other', label: 'Khác', amount: 0 }
 ]
 
-export const createEmptyPenaltyRow = (monthValue = '') => ({
-  id: `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-  date: monthValue ? `${monthValue}-01` : '',
-  employeeId: '',
-  employeeCode: '',
-  employeeName: '',
-  category: PENALTY_CATEGORIES[0].label,
-  content: '',
-  amount: PENALTY_CATEGORIES[0].amount,
-  note: '',
-  source: 'manual'
+export const PENALTY_CATEGORIES = DEFAULT_PENALTY_CATEGORIES
+
+const cloneCategory = item => ({
+  key: item.key,
+  label: item.label,
+  amount: item.amount
 })
+
+const fallbackKey = (index) => `custom_${index + 1}`
+
+export const normalizePenaltyCategories = (categories) => {
+  const source = Array.isArray(categories) ? categories : []
+  if (source.length === 0) {
+    return DEFAULT_PENALTY_CATEGORIES.map(cloneCategory)
+  }
+
+  const usedKeys = new Set()
+  return source.map((item, index) => {
+    const label = String(item?.label || item?.name || item?.content || '').trim()
+    const parsedAmount = Number(item?.amount ?? item?.money ?? 0)
+    const matchedDefault = DEFAULT_PENALTY_CATEGORIES.find(entry =>
+      entry.key === item?.key ||
+      entry.key === item?.id ||
+      entry.label === label
+    )
+    let key = String(item?.key || item?.id || matchedDefault?.key || '').trim() || fallbackKey(index)
+    if (usedKeys.has(key)) key = `${key}_${index + 1}`
+    usedKeys.add(key)
+    return {
+      key,
+      label: label || matchedDefault?.label || `Hạng mục ${index + 1}`,
+      amount: Number.isFinite(parsedAmount) && parsedAmount >= 0 ? Math.round(parsedAmount) : 0
+    }
+  })
+}
+
+export const createPenaltyCategory = (partial = {}) => ({
+  key: String(partial.key || `custom_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`),
+  label: String(partial.label || '').trim(),
+  amount: Math.max(0, Math.round(Number(partial.amount || 0)) || 0)
+})
+
+const findCategory = (categories, key) => {
+  const list = normalizePenaltyCategories(categories)
+  return list.find(item => item.key === key) || DEFAULT_PENALTY_CATEGORIES.find(item => item.key === key)
+}
+
+export const createEmptyPenaltyRow = (monthValue = '', categories = DEFAULT_PENALTY_CATEGORIES) => {
+  const first = normalizePenaltyCategories(categories)[0] || DEFAULT_PENALTY_CATEGORIES[0]
+  return {
+    id: `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    date: monthValue ? `${monthValue}-01` : '',
+    employeeId: '',
+    employeeCode: '',
+    employeeName: '',
+    category: first.label,
+    content: '',
+    amount: first.amount,
+    note: '',
+    source: 'manual'
+  }
+}
 
 export const normalizePenaltyRows = (rows = []) =>
   (rows || []).map((row, index) => ({
@@ -36,8 +86,26 @@ export const normalizePenaltyRows = (rows = []) =>
     source: row.source || 'manual'
   }))
 
-export const buildPenaltyDetailRows = (summaryRows = []) => {
+const autoRow = ({ employeeId, employeeCode, employeeName, date, suffix, category, content }) => ({
+  id: `p-auto-${employeeId}-${date}-${suffix}`,
+  date,
+  employeeId,
+  employeeCode,
+  employeeName,
+  category: category.label,
+  content,
+  amount: category.amount,
+  note: '',
+  source: 'auto'
+})
+
+export const buildPenaltyDetailRows = (summaryRows = [], categories = DEFAULT_PENALTY_CATEGORIES) => {
+  const lateUnder = findCategory(categories, 'late_under_30')
+  const lateOver = findCategory(categories, 'late_over_30')
+  const missingPunch = findCategory(categories, 'missing_punch')
+  const unapprovedAbsence = findCategory(categories, 'unapproved_absence')
   const details = []
+
   summaryRows.forEach(row => {
     const employeeName = row.employeeName || row.employeeCode || row.employeeId || ''
     const employeeId = row.employeeId || ''
@@ -50,64 +118,52 @@ export const buildPenaltyDetailRows = (summaryRows = []) => {
 
       if (day.late && lateMinutes > 0) {
         const over30 = lateMinutes >= 30
-        details.push({
-          id: `p-auto-${employeeId}-${date}-late`,
-          date,
+        details.push(autoRow({
           employeeId,
           employeeCode,
           employeeName,
-          category: over30 ? 'Muộn/sớm ≥30p' : 'Muộn/sớm <30p',
-          content: `Đi muộn ${lateMinutes} phút`,
-          amount: over30 ? 100000 : 50000,
-          note: '',
-          source: 'auto'
-        })
+          date,
+          suffix: 'late',
+          category: over30 ? lateOver : lateUnder,
+          content: `Đi muộn ${lateMinutes} phút`
+        }))
       }
 
       if (day.early && earlyMinutes > 0) {
         const over30 = earlyMinutes >= 30
-        details.push({
-          id: `p-auto-${employeeId}-${date}-early`,
-          date,
+        details.push(autoRow({
           employeeId,
           employeeCode,
           employeeName,
-          category: over30 ? 'Muộn/sớm ≥30p' : 'Muộn/sớm <30p',
-          content: `Về sớm ${earlyMinutes} phút`,
-          amount: over30 ? 100000 : 50000,
-          note: '',
-          source: 'auto'
-        })
+          date,
+          suffix: 'early',
+          category: over30 ? lateOver : lateUnder,
+          content: `Về sớm ${earlyMinutes} phút`
+        }))
       }
 
       if (day.missingPunch) {
-        details.push({
-          id: `p-auto-${employeeId}-${date}-missing`,
-          date,
+        details.push(autoRow({
           employeeId,
           employeeCode,
           employeeName,
-          category: 'Quên chấm',
-          content: 'Quên chấm công (thiếu vào/ra)',
-          amount: 50000,
-          note: '',
-          source: 'auto'
-        })
+          date,
+          suffix: 'missing',
+          category: missingPunch,
+          content: 'Quên chấm công (thiếu vào/ra)'
+        }))
       }
 
       if (day.unapprovedAbsence) {
-        details.push({
-          id: `p-auto-${employeeId}-${date}-absence`,
-          date,
+        details.push(autoRow({
           employeeId,
           employeeCode,
           employeeName,
-          category: 'Nghỉ không phép',
-          content: 'Nghỉ không phép',
-          amount: 200000,
-          note: '',
-          source: 'auto'
-        })
+          date,
+          suffix: 'absence',
+          category: unapprovedAbsence,
+          content: 'Nghỉ không phép'
+        }))
       }
     })
   })
