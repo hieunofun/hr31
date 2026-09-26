@@ -160,7 +160,7 @@ const matchWithOpenAI = async (imageDataUrl, promptPayload) => {
   return parseJsonText(outputTextFromResponse(apiPayload))
 }
 
-module.exports = async function handler(request, response) {
+export default async function handler(request, response) {
   if (request.method === 'GET') {
     return response.status(200).json({
       available: hasGroq() || hasOpenAI(),
